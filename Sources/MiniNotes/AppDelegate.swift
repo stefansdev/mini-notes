@@ -100,6 +100,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
             let target = env["MININOTES_ACTION"] == "settings" ? self?.settings?.window : self?.controller.panel
             guard let self, let view = target?.contentView else { return }
+            if env["MININOTES_WINDOWINFO"] != nil {
+                let p = self.controller.panel
+                print("collectionBehavior:", p.collectionBehavior.contains(.canJoinAllSpaces) ? "canJoinAllSpaces" : "-",
+                      p.collectionBehavior.contains(.fullScreenAuxiliary) ? "fullScreenAuxiliary" : "-",
+                      p.collectionBehavior.contains(.moveToActiveSpace) ? "moveToActiveSpace" : "-",
+                      "level:", p.level == .floating ? "floating" : "\(p.level.rawValue)", "floatOnTop:", Prefs.floatOnTop)
+            }
             if env["MININOTES_DUMP"] != nil {
                 let tv = self.controller.textView
                 let lm = tv.layoutManager!, ts = tv.textStorage!

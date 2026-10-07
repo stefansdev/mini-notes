@@ -109,7 +109,8 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
         panel.hidesOnDeactivate = false
         panel.becomesKeyOnlyIfNeeded = false
         panel.isReleasedWhenClosed = false
-        panel.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
+        // On every desktop (Space) and over full-screen apps, so switching desktops never leaves it behind.
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
         panel.minSize = NSSize(width: 340, height: 240)
         panel.acceptsMouseMovedEvents = true
         panel.animationBehavior = .none

@@ -23,7 +23,8 @@ Written in Swift with AppKit + TextKit — no Electron, no web view. ~600 KB, la
 - **Plain files** — every note is a `.md` file you own; deleted notes go to the Trash
 - **Fonts** — SF Pro by default, plus bundled Inter, Geist, iA Writer Quattro, Atkinson Hyperlegible, Literata and JetBrains Mono (or any installed font); a separate code font (SF Mono, JetBrains Mono, Fira Code, Geist Mono, IBM Plex Mono); adjustable line width and spacing
 - **Auto-updates** from GitHub Releases, or install and update with Homebrew
-- Float on top, light/dark mode, menu bar icon, open at login, adjustable text size
+- **Always at hand** — floats above other apps and follows you to every desktop and full-screen app (turn off floating with <kbd>⇧⌘F</kbd>)
+- Light/dark mode, menu bar icon, open at login, adjustable text size
 
 <p align="center"><img src="docs/code.png" width="60%" alt="Syntax-highlighted code blocks in GitHub Dark"></p>
 

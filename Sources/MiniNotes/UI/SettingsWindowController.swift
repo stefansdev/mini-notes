@@ -103,7 +103,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         status.font = .systemFont(ofSize: 11)
         status.textColor = .systemRed
 
-        let float = NSButton(checkboxWithTitle: "Keep the notes window above other apps", target: self, action: #selector(toggleFloat(_:)))
+        let float = NSButton(checkboxWithTitle: "Keep the notes window on top of other apps", target: self, action: #selector(toggleFloat(_:)))
         float.state = Prefs.floatOnTop ? .on : .off
         let hide = NSButton(checkboxWithTitle: "Hide when switching to another app", target: self, action: #selector(toggleHide(_:)))
         hide.state = Prefs.hideOnDeactivate ? .on : .off

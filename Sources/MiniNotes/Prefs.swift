@@ -9,7 +9,7 @@ enum Prefs {
             "hotKeyCode": kVK_ANSI_N,
             "hotKeyMods": cmdKey | optionKey,
             "hotKeyDisplay": "⌥⌘N",
-            "floatOnTop": false,
+            "floatOnTop": true,
             "hideOnDeactivate": false,
             "fontSize": 15.0,
         ])
