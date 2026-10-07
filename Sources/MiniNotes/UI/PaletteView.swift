@@ -5,6 +5,12 @@ struct PaletteItem {
     var subtitle: String = ""
     var accessory: String = ""
     var symbol: String = "doc.text"
+    /// Shown instead of `symbol` when set (e.g. theme swatches).
+    var image: NSImage? = nil
+    /// Starts selected when the palette opens.
+    var isCurrent: Bool = false
+    /// Runs when the row becomes selected (live preview).
+    var preview: (() -> Void)? = nil
     var action: () -> Void
 }
 
@@ -13,6 +19,9 @@ final class PaletteView: NSView, NSTableViewDataSource, NSTableViewDelegate, NST
     let field = NSTextField()
     let kind: String
     var onClose: (() -> Void)?
+    /// Called when dismissed without choosing (Esc / click outside), before `onClose`.
+    var onCancel: (() -> Void)?
+    private let searchIcon = NSImageView()
 
     private let card = CardView()
     private let table = NSTableView()
@@ -26,7 +35,6 @@ final class PaletteView: NSView, NSTableViewDataSource, NSTableViewDelegate, NST
         self.provider = provider
         super.init(frame: .zero)
         wantsLayer = true
-        layer?.backgroundColor = NSColor.black.withAlphaComponent(0.06).cgColor
 
         card.wantsLayer = true
         card.layer?.shadowOpacity = 0.18
@@ -69,12 +77,12 @@ final class PaletteView: NSView, NSTableViewDataSource, NSTableViewDelegate, NST
         scroll.automaticallyAdjustsContentInsets = false
         scroll.contentInsets = NSEdgeInsets(top: 6, left: 0, bottom: 6, right: 0)
 
-        emptyLabel.textColor = .tertiaryLabelColor
         emptyLabel.font = .systemFont(ofSize: 13)
 
-        let search = NSImageView(image: NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: nil)!)
+        let search = searchIcon
+        search.image = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: nil)
         search.symbolConfiguration = .init(pointSize: 14, weight: .medium)
-        search.contentTintColor = .tertiaryLabelColor
+        self.placeholder = placeholder
 
         addSubview(card)
         for v in [search, field, separator, scroll, emptyLabel] as [NSView] {
@@ -106,22 +114,49 @@ final class PaletteView: NSView, NSTableViewDataSource, NSTableViewDelegate, NST
             emptyLabel.centerXAnchor.constraint(equalTo: card.centerXAnchor),
             emptyLabel.topAnchor.constraint(equalTo: separator.bottomAnchor, constant: 24),
         ])
+        applyTheme()
     }
 
     required init?(coder: NSCoder) { fatalError() }
+
+    private var placeholder = ""
+    /// Re-coloring reloads the table; don't treat that as the user picking a row.
+    private var suppressPreview = false
+
+    func applyTheme() {
+        suppressPreview = true
+        defer { suppressPreview = false }
+        layer?.backgroundColor = NSColor.black.withAlphaComponent(0.06).cgColor
+        emptyLabel.textColor = Theme.tertiary
+        searchIcon.contentTintColor = Theme.tertiary
+        field.textColor = Theme.text
+        field.placeholderAttributedString = NSAttributedString(string: placeholder, attributes: [
+            .foregroundColor: Theme.tertiary, .font: NSFont.systemFont(ofSize: 15),
+        ])
+        card.needsDisplay = true
+        let selected = table.selectedRowIndexes
+        table.reloadData()
+        table.selectRowIndexes(selected, byExtendingSelection: false)
+    }
 
     func reload() {
         items = provider(field.stringValue)
         table.reloadData()
         emptyLabel.isHidden = !items.isEmpty
         if !items.isEmpty {
-            table.selectRowIndexes([0], byExtendingSelection: false)
-            table.scrollRowToVisible(0)
+            let row = field.stringValue.isEmpty ? (items.firstIndex { $0.isCurrent } ?? 0) : 0
+            table.selectRowIndexes([row], byExtendingSelection: false)
+            table.scrollRowToVisible(row)
         }
     }
 
+    private func cancel() {
+        onCancel?()
+        onClose?()
+    }
+
     override func mouseDown(with event: NSEvent) {
-        if !card.frame.contains(convert(event.locationInWindow, from: nil)) { onClose?() }
+        if !card.frame.contains(convert(event.locationInWindow, from: nil)) { cancel() }
     }
 
     // MARK: Keyboard
@@ -133,7 +168,7 @@ final class PaletteView: NSView, NSTableViewDataSource, NSTableViewDelegate, NST
         case #selector(NSResponder.moveDown(_:)): move(1); return true
         case #selector(NSResponder.moveUp(_:)): move(-1); return true
         case #selector(NSResponder.insertNewline(_:)): run(table.selectedRow); return true
-        case #selector(NSResponder.cancelOperation(_:)): onClose?(); return true
+        case #selector(NSResponder.cancelOperation(_:)): cancel(); return true
         default: return false
         }
     }
@@ -158,6 +193,11 @@ final class PaletteView: NSView, NSTableViewDataSource, NSTableViewDelegate, NST
 
     func numberOfRows(in tableView: NSTableView) -> Int { items.count }
 
+    func tableViewSelectionDidChange(_ notification: Notification) {
+        let row = table.selectedRow
+        if !suppressPreview, items.indices.contains(row) { items[row].preview?() }
+    }
+
     func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? { PaletteRowView() }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
@@ -172,7 +212,7 @@ private final class CardView: NSView {
         let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 10, yRadius: 10)
         Theme.paletteBackground.setFill()
         path.fill()
-        NSColor.separatorColor.setStroke()
+        Theme.separator.setStroke()
         path.lineWidth = 1
         path.stroke()
     }
@@ -203,12 +243,9 @@ private final class PaletteCell: NSTableCellView {
         super.init(frame: .zero)
         identifier = Self.id
         icon.symbolConfiguration = .init(pointSize: 13, weight: .regular)
-        icon.contentTintColor = .secondaryLabelColor
         title.font = .systemFont(ofSize: 13.5, weight: .medium)
         subtitle.font = .systemFont(ofSize: 12.5)
-        subtitle.textColor = .tertiaryLabelColor
         accessory.font = .systemFont(ofSize: 12)
-        accessory.textColor = .tertiaryLabelColor
         accessory.alignment = .right
         for l in [title, subtitle, accessory] {
             l.lineBreakMode = .byTruncatingTail
@@ -226,7 +263,7 @@ private final class PaletteCell: NSTableCellView {
         NSLayoutConstraint.activate([
             icon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 18),
             icon.centerYAnchor.constraint(equalTo: centerYAnchor),
-            icon.widthAnchor.constraint(equalToConstant: 18),
+            icon.widthAnchor.constraint(equalToConstant: 22),
             title.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 10),
             title.centerYAnchor.constraint(equalTo: centerYAnchor),
             subtitle.leadingAnchor.constraint(equalTo: title.trailingAnchor, constant: 8),
@@ -240,7 +277,11 @@ private final class PaletteCell: NSTableCellView {
     required init?(coder: NSCoder) { fatalError() }
 
     func configure(_ item: PaletteItem) {
-        icon.image = NSImage(systemSymbolName: item.symbol, accessibilityDescription: nil)
+        icon.image = item.image ?? NSImage(systemSymbolName: item.symbol, accessibilityDescription: nil)
+        icon.contentTintColor = Theme.secondary
+        title.textColor = Theme.text
+        subtitle.textColor = Theme.tertiary
+        accessory.textColor = Theme.tertiary
         title.stringValue = item.title
         subtitle.stringValue = item.subtitle
         accessory.stringValue = item.accessory

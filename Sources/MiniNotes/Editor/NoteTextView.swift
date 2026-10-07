@@ -21,7 +21,7 @@ final class NoteTextView: NSTextView {
         if (textStorage?.length ?? 0) == 0, !hasMarkedText() {
             let font = (typingAttributes[.font] as? NSFont) ?? .systemFont(ofSize: 15)
             (placeholder as NSString).draw(at: textContainerOrigin,
-                                           withAttributes: [.font: font, .foregroundColor: NSColor.tertiaryLabelColor])
+                                           withAttributes: [.font: font, .foregroundColor: Theme.tertiary])
         }
     }
 

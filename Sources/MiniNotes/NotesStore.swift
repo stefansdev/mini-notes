@@ -112,10 +112,10 @@ final class NotesStore {
         setFolder(dest)
     }
 
-    func setFolder(_ url: URL) {
+    func setFolder(_ url: URL, remember: Bool = true) {
         flush()
         folder = url
-        Prefs.notesFolder = url
+        if remember { Prefs.notesFolder = url }
         load()
     }
 

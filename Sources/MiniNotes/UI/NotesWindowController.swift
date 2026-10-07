@@ -1,6 +1,15 @@
 import AppKit
 import UniformTypeIdentifiers
 
+/// Fills itself with a color (drawn, not a layer color, so it composites in order with siblings).
+final class ColorView: NSView {
+    var color: NSColor = .clear { didSet { needsDisplay = true } }
+    override func draw(_ dirtyRect: NSRect) {
+        color.setFill()
+        dirtyRect.fill()
+    }
+}
+
 final class NotesPanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
@@ -19,6 +28,8 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
     private let scrollView = NSScrollView()
     private let footer = NSTextField(labelWithString: "")
     private var pinButton: HoverButton!
+    /// Solid background for editor themes (the System theme uses vibrancy instead).
+    private let themeBackground = ColorView()
     private var palette: PaletteView?
     private(set) var currentID: String?
     private var cursorMemory: [String: NSRange] = [:]
@@ -47,6 +58,10 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
         configureTextView()
         buildLayout()
         openInitialNote()
+        applyTheme()
+        NotificationCenter.default.addObserver(forName: .themeDidChange, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.applyTheme() }
+        }
         NotificationCenter.default.addObserver(forName: .notesChangedOnDisk, object: nil, queue: .main) { [weak self] note in
             let ids = note.userInfo?["ids"] as? Set<String> ?? []
             MainActor.assumeIsolated { self?.notesChangedOnDisk(ids) }
@@ -126,7 +141,7 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
         tv.autoresizingMask = [.width]
         tv.minSize = .zero
         tv.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: .greatestFiniteMagnitude)
-        tv.insertionPointColor = .controlAccentColor
+        tv.insertionPointColor = Theme.accent
         tv.font = styler.body
         tv.defaultParagraphStyle = styler.bodyPara
         tv.typingAttributes = styler.baseAttributes
@@ -138,6 +153,9 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
         root.blendingMode = .behindWindow
         root.state = .active
         panel.contentView = root
+        themeBackground.frame = root.bounds
+        themeBackground.autoresizingMask = [.width, .height]
+        root.addSubview(themeBackground)
 
         scrollView.documentView = textView
         scrollView.drawsBackground = false
@@ -151,7 +169,7 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
                                                name: NSView.boundsDidChangeNotification, object: scrollView.contentView)
 
         footer.font = .systemFont(ofSize: 11)
-        footer.textColor = .tertiaryLabelColor
+        footer.textColor = Theme.tertiary
         footer.alignment = .right
 
         let browse = HoverButton(symbol: "list.bullet", tip: "Browse Notes  ⌘P", target: self, action: #selector(browseNotes(_:)))
@@ -229,6 +247,10 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
 
     func hide(hideApp: Bool = true) {
         store.flush()
+        if palette?.kind == "themes" {
+            palette?.onCancel?()
+            closePalette()
+        }
         guard panel.isVisible else { return }
         visibilityToken += 1
         let token = visibilityToken
@@ -322,13 +344,13 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
             words += 1
         }
         let chars = text.count
-        footer.textColor = .tertiaryLabelColor
+        footer.textColor = Theme.tertiary
         footer.stringValue = chars == 0 ? "" : "\(words) \(words == 1 ? "word" : "words")  ·  \(chars) \(chars == 1 ? "character" : "characters")"
     }
 
     private func flash(_ message: String) {
         flashWork?.cancel()
-        footer.textColor = .secondaryLabelColor
+        footer.textColor = Theme.secondary
         footer.stringValue = message
         let work = DispatchWorkItem { [weak self] in
             self?.flashWork = nil
@@ -340,12 +362,61 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
 
     // MARK: - Palette
 
+    /// Re-colors everything for the current theme.
+    func applyTheme() {
+        panel.appearance = Theme.appearance
+        if let bg = Theme.background {
+            themeBackground.isHidden = false
+            themeBackground.color = bg
+        } else {
+            themeBackground.isHidden = true
+        }
+        textView.insertionPointColor = Theme.accent
+        textView.selectedTextAttributes = [.backgroundColor: Theme.textSelection]
+        if let ts = textView.textStorage {
+            ts.beginEditing()
+            styler.styleAll(ts)
+            ts.endEditing()
+        }
+        textView.typingAttributes = styler.baseAttributes
+        textView.needsDisplay = true
+        header.applyTheme()
+        footer.textColor = flashWork == nil ? Theme.tertiary : Theme.secondary
+        palette?.applyTheme()
+    }
+
+    #if DEBUG
+    var debugPalette: PaletteView? { palette }
+    #endif
+
+    @objc func chooseTheme(_ sender: Any?) {
+        let original = ThemeManager.shared.selectedID
+        present(kind: "themes", placeholder: "Search themes…") { query in
+            let ids = [Themes.system] + Themes.families.map(\.id) + Themes.all.map(\.id)
+            let terms = query.split(separator: " ").map(String.init)
+            return ids.filter { id in
+                terms.allSatisfy { Themes.name(id).range(of: $0, options: [.caseInsensitive, .diacriticInsensitive]) != nil }
+            }.map { id in
+                let kind = id == Themes.system ? "Follows macOS"
+                    : Themes.family(id) != nil ? "Light + Dark"
+                    : (Themes.spec(id)?.dark == true ? "Dark" : "Light")
+                return PaletteItem(title: Themes.name(id), accessory: id == original ? "Current" : kind,
+                                   symbol: "circle.lefthalf.filled", image: Themes.swatch(id), isCurrent: id == original,
+                                   preview: { ThemeManager.shared.select(id, persist: false) },
+                                   action: { ThemeManager.shared.select(id) })
+            }
+        }
+        palette?.onCancel = { ThemeManager.shared.select(original) }
+    }
+
     private func present(kind: String, placeholder: String, provider: @escaping (String) -> [PaletteItem]) {
         if !panel.isVisible { show() }
         if palette?.kind == kind {
+            palette?.onCancel?()
             closePalette()
             return
         }
+        palette?.onCancel?()
         palette?.removeFromSuperview()
         let p = PaletteView(kind: kind, placeholder: placeholder, provider: provider)
         p.onClose = { [weak self] in self?.closePalette() }
@@ -448,6 +519,7 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
             format("Checklist", "⇧⌘9", "checklist", #selector(NoteTextView.formatChecklist(_:))),
             format("Toggle Checkbox", "⌘↩", "checkmark.square", #selector(NoteTextView.toggleTask(_:))),
             format("Blockquote", "⇧⌘B", "text.quote", #selector(NoteTextView.formatQuote(_:))),
+            item("Change Theme…", "⌥⌘T", "paintpalette") { [weak self] in self?.chooseTheme(nil) },
             item("Bigger Text", "⌘+", "plus.magnifyingglass") { [weak self] in self?.zoomIn(nil) },
             item("Smaller Text", "⌘−", "minus.magnifyingglass") { [weak self] in self?.zoomOut(nil) },
             item("Show Notes Folder", "", "folder") { [weak self] in self?.revealFolder(nil) },
@@ -538,8 +610,7 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
 
     func applyFloat() {
         panel.level = Prefs.floatOnTop ? .floating : .normal
-        pinButton?.setSymbol(Prefs.floatOnTop ? "pin.fill" : "pin",
-                             tint: Prefs.floatOnTop ? .controlAccentColor : .secondaryLabelColor)
+        pinButton?.setSymbol(Prefs.floatOnTop ? "pin.fill" : "pin", active: Prefs.floatOnTop)
     }
 
     @objc func hideWindow(_ sender: Any?) { hide() }

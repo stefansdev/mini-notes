@@ -41,7 +41,7 @@ final class MarkdownStyler: NSObject, NSTextStorageDelegate {
     static let tabWidth: CGFloat = 24
 
     var baseAttributes: [NSAttributedString.Key: Any] {
-        [.font: body, .foregroundColor: NSColor.labelColor, .paragraphStyle: bodyPara]
+        [.font: body, .foregroundColor: Theme.text, .paragraphStyle: bodyPara]
     }
 
     init(baseSize: CGFloat) {
@@ -222,7 +222,7 @@ final class MarkdownStyler: NSObject, NSTextStorageDelegate {
             syntax(whole)
             return
         } else if let m = Self.quoteRE.firstMatch(in: line, range: whole) {
-            ts.addAttributes([.mdQuote: true, .foregroundColor: NSColor.secondaryLabelColor, .paragraphStyle: quotePara], range: lineFull)
+            ts.addAttributes([.mdQuote: true, .foregroundColor: Theme.secondary, .paragraphStyle: quotePara], range: lineFull)
             syntax(m.range)
             inlineStart = m.range.length
         } else if let m = Self.taskRE.firstMatch(in: line, range: whole) {
@@ -237,10 +237,10 @@ final class MarkdownStyler: NSObject, NSTextStorageDelegate {
             var restStart = rest.location
             while restStart < len, ls.character(at: restStart) == 0x20 || ls.character(at: restStart) == 0x09 { restStart += 1 }
             if checked, restStart < len {
-                ts.addAttribute(.foregroundColor, value: NSColor.tertiaryLabelColor, range: abs(rest))
-                ts.addAttributes([.foregroundColor: NSColor.tertiaryLabelColor,
+                ts.addAttribute(.foregroundColor, value: Theme.tertiary, range: abs(rest))
+                ts.addAttributes([.foregroundColor: Theme.tertiary,
                                   .strikethroughStyle: NSUnderlineStyle.single.rawValue,
-                                  .strikethroughColor: NSColor.tertiaryLabelColor],
+                                  .strikethroughColor: Theme.tertiary],
                                  range: abs(NSRange(location: restStart, length: len - restStart)))
             }
             hangingIndent(indentW + boxW + (rest.length > 0 ? spaceWidth : 0))
@@ -249,13 +249,13 @@ final class MarkdownStyler: NSObject, NSTextStorageDelegate {
             let indent = m.range(at: 1), marker = m.range(at: 2), gap = m.range(at: 3)
             let level = indentLevel(ls, indent)
             let indentW = applyIndent(ts, ls, indent, offset)
-            ts.addAttributes([.mdBullet: level, .foregroundColor: NSColor.secondaryLabelColor], range: abs(marker))
+            ts.addAttributes([.mdBullet: level, .foregroundColor: Theme.secondary], range: abs(marker))
             hangingIndent(indentW + bulletWidths[level % bulletWidths.count] + CGFloat(gap.length) * spaceWidth)
             inlineStart = m.range.length
         } else if let m = Self.orderedRE.firstMatch(in: line, range: whole) {
             let indent = m.range(at: 1), marker = m.range(at: 2), gap = m.range(at: 3)
             let indentW = applyIndent(ts, ls, indent, offset)
-            ts.addAttribute(.foregroundColor, value: NSColor.secondaryLabelColor, range: abs(marker))
+            ts.addAttribute(.foregroundColor, value: Theme.secondary, range: abs(marker))
             let markerW = ls.substring(with: marker).size(withAttributes: [.font: body]).width
             hangingIndent(indentW + markerW + CGFloat(gap.length) * spaceWidth)
             inlineStart = m.range.length
@@ -312,7 +312,7 @@ final class MarkdownStyler: NSObject, NSTextStorageDelegate {
         if has("](") {
             for m in Self.linkRE.matches(in: line, range: range) where free(m.range) {
                 let text = m.range(at: 1)
-                ts.addAttributes([.foregroundColor: NSColor.linkColor, .mdLink: ls.substring(with: m.range(at: 2))], range: abs(text))
+                ts.addAttributes([.foregroundColor: Theme.link, .mdLink: ls.substring(with: m.range(at: 2))], range: abs(text))
                 syntax(NSRange(location: m.range.location, length: 1))
                 let tail = NSRange(location: NSMaxRange(text), length: NSMaxRange(m.range) - NSMaxRange(text))
                 syntax(tail)
@@ -321,10 +321,10 @@ final class MarkdownStyler: NSObject, NSTextStorageDelegate {
         }
         if has("http") || has("www.") {
             for m in Self.urlRE.matches(in: line, range: range) where free(m.range) {
-                ts.addAttributes([.foregroundColor: NSColor.linkColor,
+                ts.addAttributes([.foregroundColor: Theme.link,
                                   .mdLink: ls.substring(with: m.range),
                                   .underlineStyle: NSUnderlineStyle.single.rawValue,
-                                  .underlineColor: NSColor.linkColor.withAlphaComponent(0.35)], range: abs(m.range))
+                                  .underlineColor: Theme.link.withAlphaComponent(0.35)], range: abs(m.range))
                 protected.append(m.range)
             }
         }
@@ -343,7 +343,7 @@ final class MarkdownStyler: NSObject, NSTextStorageDelegate {
         if has("~~") {
             emphasis(Self.strikeRE, 2) {
                 ts.addAttributes([.strikethroughStyle: NSUnderlineStyle.single.rawValue,
-                                  .foregroundColor: NSColor.secondaryLabelColor], range: $0)
+                                  .foregroundColor: Theme.secondary], range: $0)
             }
         }
         if has("==") { emphasis(Self.highlightRE, 2) { ts.addAttribute(.mdHighlight, value: true, range: $0) } }

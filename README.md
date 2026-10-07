@@ -15,6 +15,7 @@ Written in Swift with AppKit + TextKit — no Electron, no web view. ~600 KB, la
 - **Live markdown** — headings, **bold**, _italic_, ~~strikethrough~~, ==highlight==, `inline code`, fenced code blocks, links, quotes, rules, nested bullets, numbered lists and clickable checkboxes. Syntax hides itself except on the line you're editing
 - **Smart editing** — lists continue on <kbd>Enter</kbd>, <kbd>Tab</kbd> / <kbd>⇧Tab</kbd> nest them, `[] ` becomes a checkbox, <kbd>Backspace</kbd> after a marker removes it
 - **Quick switcher** (<kbd>⌘P</kbd>) with full-text search, and an **actions palette** (<kbd>⌘K</kbd>)
+- **Themes** — 18 popular editor themes (GitHub, VS Code, One Dark, Dracula, Catppuccin, Tokyo Night, Nord, Gruvbox, Solarized, Rosé Pine…) with live preview, plus auto light/dark pairs
 - **iCloud sync** — one checkbox moves your notes to iCloud Drive; edits from your other Macs show up live
 - **Plain files** — every note is a `.md` file you own; deleted notes go to the Trash
 - Float on top, light/dark mode, menu bar icon, open at login, adjustable text size
@@ -66,8 +67,24 @@ Mini Notes lives in the menu bar (no Dock icon). Press the hotkey to show or hid
 | Copy as markdown | <kbd>⇧⌘C</kbd> | Toggle checkbox | <kbd>⌘↩</kbd> or click it |
 | Export | <kbd>⇧⌘E</kbd> | Blockquote | <kbd>⇧⌘B</kbd> |
 | Delete (to Trash) | <kbd>⇧⌘⌫</kbd> | Indent / outdent list | <kbd>Tab</kbd> / <kbd>⇧Tab</kbd> |
+| Change theme | <kbd>⌥⌘T</kbd> | | |
 | Float on top | <kbd>⇧⌘F</kbd> | Text size | <kbd>⌘+</kbd> / <kbd>⌘−</kbd> / <kbd>⌘0</kbd> |
 | Find | <kbd>⌘F</kbd> | Open link | <kbd>⌘</kbd>-click |
+
+## Themes
+
+Press <kbd>⌥⌘T</kbd> (or <kbd>⌘K</kbd> → *Change Theme…*) and arrow through the list — the window previews each theme live; <kbd>Enter</kbd> keeps it, <kbd>Esc</kbd> reverts. You can also pick one in Settings.
+
+<p align="center"><img src="docs/themes.png" alt="Theme gallery: GitHub Dark, Dracula, Catppuccin Mocha, Tokyo Night, Nord, Gruvbox Dark, GitHub Light, Catppuccin Latte, Solarized Light"></p>
+
+| | Themes |
+|---|---|
+| **Default** | System (translucent, follows macOS) |
+| **Auto light/dark** | VS Code, GitHub, One, Catppuccin, Gruvbox, Solarized, Rosé Pine |
+| **Dark** | VS Code Dark Modern, GitHub Dark, One Dark Pro, Dracula, Monokai, Nord, Tokyo Night, Catppuccin Mocha, Gruvbox Dark, Solarized Dark, Rosé Pine |
+| **Light** | VS Code Light Modern, GitHub Light, One Light, Catppuccin Latte, Gruvbox Light, Solarized Light, Rosé Pine Dawn |
+
+"Auto" themes switch between their light and dark variant with macOS. Themes live in [`Theme.swift`](Sources/MiniNotes/Theme.swift) as ten colors each — adding one is a single `ThemeSpec` entry.
 
 ## Storage & sync
 
@@ -90,6 +107,7 @@ Sources/MiniNotes/
   Markdown/MarkdownLayoutManager.swift  # hidden syntax, bullets, checkboxes, code/quote drawing
   Editor/NoteTextView.swift             # list continuation, shortcuts, formatting commands
   UI/                                   # window, header, ⌘P/⌘K palette, settings
+  Theme.swift                           # theme definitions + ThemeManager
   NotesStore.swift                      # .md files, debounced saves, folder watching / iCloud
   HotKey.swift                          # global hotkey (Carbon, no Accessibility permission)
 ```
@@ -98,6 +116,7 @@ Debug builds include test hooks:
 
 ```bash
 MININOTES_SNAPSHOT=/dev/null MININOTES_ACTION=selftest .build/debug/MiniNotes   # editor behaviour tests
+MININOTES_SNAPSHOT=/dev/null MININOTES_ACTION=themetest .build/debug/MiniNotes  # theme preview/revert tests
 MININOTES_SNAPSHOT=/tmp/shot.png MININOTES_APPEARANCE=dark .build/debug/MiniNotes  # render window to PNG
 ```
 

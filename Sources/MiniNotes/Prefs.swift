@@ -65,3 +65,10 @@ enum Prefs {
             .appendingPathComponent("Mini Notes/Notes", isDirectory: true)
     }
 }
+
+extension Prefs {
+    static var themeID: String {
+        get { UserDefaults.standard.string(forKey: "themeID") ?? Themes.system }
+        set { UserDefaults.standard.set(newValue, forKey: "themeID") }
+    }
+}

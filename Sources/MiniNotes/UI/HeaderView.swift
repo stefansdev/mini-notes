@@ -18,7 +18,7 @@ final class Hairline: NSView {
     override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: 1) }
 
     override func draw(_ dirtyRect: NSRect) {
-        NSColor.separatorColor.setFill()
+        Theme.separator.setFill()
         bounds.fill()
     }
 }
@@ -44,12 +44,21 @@ final class HoverButton: NSButton {
         setSymbol(symbol)
     }
 
+    private var active = false
+
     required init?(coder: NSCoder) { fatalError() }
 
-    func setSymbol(_ name: String, tint: NSColor = .secondaryLabelColor) {
+    /// `active` tints the icon with the accent color (e.g. pinned).
+    func setSymbol(_ name: String, active: Bool = false) {
         image = NSImage(systemSymbolName: name, accessibilityDescription: toolTip)?
             .withSymbolConfiguration(.init(pointSize: 13, weight: .medium))
-        contentTintColor = tint
+        self.active = active
+        applyTheme()
+    }
+
+    func applyTheme() {
+        contentTintColor = active ? Theme.accent : Theme.secondary
+        refresh()
     }
 
     override func updateTrackingAreas() {
@@ -82,7 +91,6 @@ final class HeaderView: NSView {
     override init(frame: NSRect) {
         super.init(frame: frame)
         titleLabel.font = .systemFont(ofSize: 13, weight: .medium)
-        titleLabel.textColor = .secondaryLabelColor
         titleLabel.alignment = .center
         titleLabel.lineBreakMode = .byTruncatingTail
         titleLabel.maximumNumberOfLines = 1
@@ -109,6 +117,12 @@ final class HeaderView: NSView {
     }
 
     required init?(coder: NSCoder) { fatalError() }
+
+    func applyTheme() {
+        titleLabel.textColor = Theme.secondary
+        separator.needsDisplay = true
+        for b in left.arrangedSubviews + right.arrangedSubviews { (b as? HoverButton)?.applyTheme() }
+    }
 
     func setButtons(left l: [NSView], right r: [NSView]) {
         l.forEach { left.addArrangedSubview($0) }

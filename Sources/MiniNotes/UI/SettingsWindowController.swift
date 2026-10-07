@@ -60,6 +60,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private let folderLabel = NSTextField(labelWithString: "")
     private let iCloud = NSButton(checkboxWithTitle: "Sync notes with iCloud Drive", target: nil, action: nil)
     private let iCloudHint = NSTextField(labelWithString: "")
+    private let themePopup = NSPopUpButton()
     private let registerHotKey: () -> Bool
     private let floatChanged: () -> Void
     private let folderChanged: () -> Void
@@ -133,8 +134,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             return s
         }
 
+        buildThemeMenu()
+        NotificationCenter.default.addObserver(forName: .themeDidChange, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.selectCurrentTheme() }
+        }
+
         let grid = NSGridView(views: [
             [label("Toggle window:"), row(recorder, status)],
+            [label("Theme:"), themePopup],
             [NSGridCell.emptyContentView, float],
             [NSGridCell.emptyContentView, hide],
             [NSGridCell.emptyContentView, login],
@@ -147,8 +154,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         grid.rowAlignment = .firstBaseline
         grid.columnSpacing = 10
         grid.rowSpacing = 12
-        grid.row(at: 4).topPadding = 8
-        grid.row(at: 5).topPadding = -6
+        grid.row(at: 5).topPadding = 8
+        grid.row(at: 6).topPadding = -6
         grid.translatesAutoresizingMaskIntoConstraints = false
 
         let content = NSView()
@@ -161,6 +168,45 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         ])
         window?.contentView = content
         window?.setContentSize(content.fittingSize)
+    }
+
+    private func buildThemeMenu() {
+        let menu = NSMenu()
+        func add(_ id: String) {
+            let item = NSMenuItem(title: Themes.name(id), action: nil, keyEquivalent: "")
+            item.representedObject = id
+            item.image = Themes.swatch(id)
+            menu.addItem(item)
+        }
+        func header(_ title: String) {
+            menu.addItem(.separator())
+            let h = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+            h.isEnabled = false
+            menu.addItem(h)
+        }
+        add(Themes.system)
+        header("Follow macOS light / dark")
+        Themes.families.forEach { add($0.id) }
+        header("Dark")
+        Themes.all.filter(\.dark).forEach { add($0.id) }
+        header("Light")
+        Themes.all.filter { !$0.dark }.forEach { add($0.id) }
+        themePopup.menu = menu
+        themePopup.target = self
+        themePopup.action = #selector(themeChanged(_:))
+        selectCurrentTheme()
+    }
+
+    private func selectCurrentTheme() {
+        let id = ThemeManager.shared.selectedID
+        if let item = themePopup.itemArray.first(where: { $0.representedObject as? String == id }) {
+            themePopup.select(item)
+        }
+    }
+
+    @objc private func themeChanged(_ sender: NSPopUpButton) {
+        guard let id = sender.selectedItem?.representedObject as? String else { return }
+        ThemeManager.shared.select(id)
     }
 
     func refreshStatus(_ ok: Bool) {

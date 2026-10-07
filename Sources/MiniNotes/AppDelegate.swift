@@ -9,6 +9,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         Prefs.registerDefaults()
+        _ = ThemeManager.shared
         controller = NotesWindowController()
         controller.openSettings = { [weak self] in self?.openSettings(nil) }
         NSApp.mainMenu = buildMainMenu()
@@ -38,12 +39,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let appearance = env["MININOTES_APPEARANCE"] {
             NSApp.appearance = NSAppearance(named: appearance == "light" ? .aqua : .darkAqua)
         }
+        if let theme = env["MININOTES_THEME"] { ThemeManager.shared.select(theme, persist: false) }
+        if ["selftest", "undotest", "themetest"].contains(env["MININOTES_ACTION"] ?? "") {
+            // Tests edit text; never let them touch a real notes folder.
+            let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("mininotes-test-\(UUID().uuidString)")
+            NotesStore.shared.setFolder(tmp, remember: false)
+            controller.reloadFolder()
+        }
         if env["MININOTES_ACTION"] == "selftest" { runSelfTest(); NSApp.terminate(nil); return }
         if env["MININOTES_ACTION"] == "undotest" { runUndoTest(); return }
+        if env["MININOTES_ACTION"] == "themetest" { runThemeTest(); NSApp.terminate(nil); return }
         if let dest = env["MININOTES_SYNCTEST"] { runSyncTest(URL(fileURLWithPath: dest)); return }
         switch env["MININOTES_ACTION"] ?? "" {
         case "notes": controller.browseNotes(nil)
         case "settings": openSettings(nil)
+        case "theme": controller.chooseTheme(nil)
         case "actions": controller.showActions(nil)
         case let a where a.hasPrefix("caret:"):
             controller.textView.setSelectedRange(NSRange(location: Int(a.dropFirst(6)) ?? 0, length: 0)); controller.textView.scrollRangeToVisible(controller.textView.selectedRange())
@@ -81,7 +91,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func runSyncTest(_ dest: URL) {
         let store = NotesStore.shared
         let fm = FileManager.default
-        let source = store.folder
+        // Seed a throwaway source folder so the migration never touches real notes.
+        let source = fm.temporaryDirectory.appendingPathComponent("mininotes-sync-src-\(UUID().uuidString)")
+        try! fm.createDirectory(at: source, withIntermediateDirectories: true)
+        try! "# First note\nhello".write(to: source.appendingPathComponent("seed-1.md"), atomically: false, encoding: .utf8)
+        try! "# Second note".write(to: source.appendingPathComponent("seed-2.md"), atomically: false, encoding: .utf8)
+        store.setFolder(source, remember: false)
+        controller.reloadFolder()
         var failures = 0
         func check(_ name: String, _ ok: Bool) { if !ok { failures += 1 }; print(ok ? "PASS" : "FAIL", name) }
         func after(_ t: Double, _ f: @escaping () -> Void) { DispatchQueue.main.asyncAfter(deadline: .now() + t, execute: f) }
@@ -144,6 +160,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { run(i + 1) }
         }
         run(0)
+    }
+
+    private func runThemeTest() {
+        setvbuf(stdout, nil, _IONBF, 0)
+        var failures = 0
+        func check(_ name: String, _ ok: Bool) { if !ok { failures += 1 }; print(ok ? "PASS" : "FAIL", name) }
+        func key(_ sel: Selector) {
+            guard let p = controller.debugPalette else { return }
+            _ = p.control(p.field, textView: NSTextView(), doCommandBy: sel)
+        }
+        ThemeManager.shared.select(Themes.system)
+        check("starts on System", Theme.spec == nil && Prefs.themeID == "system")
+
+        controller.chooseTheme(nil)
+        check("picker opens", controller.debugPalette?.kind == "themes")
+        key(#selector(NSResponder.moveDown(_:)))
+        check("arrow previews next theme", Theme.spec?.id == "vscode-dark" || Theme.spec?.id == "vscode-light")
+        check("preview is not saved", Prefs.themeID == "system")
+        key(#selector(NSResponder.cancelOperation(_:)))
+        check("Esc reverts to System", Theme.spec == nil && ThemeManager.shared.selectedID == "system")
+        check("Esc closes picker", controller.debugPalette == nil)
+
+        controller.chooseTheme(nil)
+        key(#selector(NSResponder.moveDown(_:)))
+        key(#selector(NSResponder.moveDown(_:)))
+        key(#selector(NSResponder.insertNewline(_:)))
+        check("Enter saves theme", Prefs.themeID == "github" && ThemeManager.shared.selectedID == "github")
+        check("Enter closes picker", controller.debugPalette == nil)
+
+        controller.chooseTheme(nil)
+        key(#selector(NSResponder.moveDown(_:)))
+        controller.hide()
+        check("hiding window mid-preview reverts", ThemeManager.shared.selectedID == "github" && Prefs.themeID == "github")
+
+        ThemeManager.shared.select(Themes.system)
+        controller.textView.string = "Hello"
+        ThemeManager.shared.select("github-dark")
+        let styled = controller.textView.textStorage!.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor
+        let expected = NSColor(hex: 0xE6EDF3)
+        check("text restyled with theme color", styled?.usingColorSpace(.sRGB) == expected.usingColorSpace(.sRGB))
+        check("dark theme sets dark appearance", controller.panel.appearance?.name == .darkAqua)
+        ThemeManager.shared.select("solarized-light")
+        check("light theme sets light appearance", controller.panel.appearance?.name == .aqua)
+        ThemeManager.shared.select(Themes.system)
+        print(failures == 0 ? "ALL PASSED" : "\(failures) FAILED")
     }
 
     private func runSelfTest() {
@@ -323,6 +384,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             item("Code Block", #selector(NoteTextView.formatCodeBlock(_:)), "c", [.command, .option]),
         ])
         submenu("View", [
+            item("Theme…", #selector(NotesWindowController.chooseTheme(_:)), "t", [.command, .option], target: c),
             item("Float on Top", #selector(NotesWindowController.toggleFloat(_:)), "f", [.command, .shift], target: c),
             sep(),
             item("Bigger Text", #selector(NotesWindowController.zoomIn(_:)), "=", target: c),

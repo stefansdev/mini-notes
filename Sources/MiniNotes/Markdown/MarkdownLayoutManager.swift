@@ -211,7 +211,7 @@ final class MarkdownLayoutManager: NSLayoutManager, NSLayoutManagerDelegate {
 
     private func drawCheckbox(_ r: NSRect, checked: Bool) {
         if checked {
-            NSColor.controlAccentColor.setFill()
+            Theme.accent.setFill()
             NSBezierPath(roundedRect: r, xRadius: 4, yRadius: 4).fill()
             let check = NSBezierPath()
             check.move(to: NSPoint(x: r.minX + r.width * 0.26, y: r.minY + r.height * 0.52))
@@ -220,12 +220,12 @@ final class MarkdownLayoutManager: NSLayoutManager, NSLayoutManagerDelegate {
             check.lineWidth = 1.7
             check.lineCapStyle = .round
             check.lineJoinStyle = .round
-            NSColor.white.setStroke()
+            Theme.checkmark.setStroke()
             check.stroke()
         } else {
             let box = NSBezierPath(roundedRect: r.insetBy(dx: 0.6, dy: 0.6), xRadius: 3.6, yRadius: 3.6)
             box.lineWidth = 1.2
-            NSColor.secondaryLabelColor.setStroke()
+            Theme.secondary.setStroke()
             box.stroke()
         }
     }
