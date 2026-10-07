@@ -256,7 +256,7 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
 
     func hide(hideApp: Bool = true) {
         store.flush()
-        if palette?.kind == "themes" {
+        if palette?.kind == "themes" || palette?.kind == "fonts" {
             palette?.onCancel?()
             closePalette()
         }
@@ -414,6 +414,27 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
     var debugPalette: PaletteView? { palette }
     #endif
 
+    @objc func chooseFont(_ sender: Any?) {
+        let original = Prefs.fontFamily
+        func set(_ id: String) {
+            Prefs.fontFamily = id
+            NotificationCenter.default.post(name: .editorSettingsDidChange, object: nil)
+        }
+        present(kind: "fonts", placeholder: "Search fonts…") { query in
+            let terms = query.split(separator: " ").map(String.init)
+            let choices = FontLibrary.builtInText.map { ($0, "Built in") } + FontLibrary.bundledText.map { ($0, "Included") }
+            return choices.filter { choice, _ in
+                terms.allSatisfy { choice.name.range(of: $0, options: .caseInsensitive) != nil }
+            }.map { choice, group in
+                PaletteItem(title: choice.name, accessory: choice.id == original ? "Current" : group,
+                            symbol: "textformat", titleFont: FontLibrary.textFont(choice.id, size: 14),
+                            isCurrent: choice.id == original,
+                            preview: { set(choice.id) }, primaryTitle: "Use Font", action: { set(choice.id) })
+            }
+        }
+        palette?.onCancel = { set(original) }
+    }
+
     @objc func chooseTheme(_ sender: Any?) {
         let original = ThemeManager.shared.selectedID
         present(kind: "themes", placeholder: "Search themes…") { query in
@@ -570,6 +591,7 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
             format("Move Line Down", "⌥⌘↓", "arrow.down", #selector(NoteTextView.moveLineDown(_:))),
             format("Duplicate Line", "⇧⌘D", "plus.square.on.square", #selector(NoteTextView.duplicateLine(_:))),
             item("Change Theme…", "⌥⌘T", "paintpalette") { [weak self] in self?.chooseTheme(nil) },
+            item("Change Font…", "", "textformat") { [weak self] in self?.chooseFont(nil) },
             item("Bigger Text", "⌘+", "plus.magnifyingglass") { [weak self] in self?.zoomIn(nil) },
             item("Smaller Text", "⌘−", "minus.magnifyingglass") { [weak self] in self?.zoomOut(nil) },
             item("Show Notes Folder", "", "folder") { [weak self] in self?.revealFolder(nil) },

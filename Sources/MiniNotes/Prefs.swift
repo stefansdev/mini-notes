@@ -110,3 +110,11 @@ extension Prefs {
         set { UserDefaults.standard.set(newValue, forKey: "skippedVersion") }
     }
 }
+
+extension Prefs {
+    /// "system" (SF Mono) or a monospaced font family name.
+    static var codeFont: String {
+        get { UserDefaults.standard.string(forKey: "codeFont") ?? "system" }
+        set { UserDefaults.standard.set(newValue, forKey: "codeFont") }
+    }
+}

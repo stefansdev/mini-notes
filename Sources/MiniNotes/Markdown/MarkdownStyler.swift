@@ -75,27 +75,13 @@ final class MarkdownStyler: NSObject, NSTextStorageDelegate {
 
     /// The editor font for the current `Prefs.fontFamily`.
     static func editorFont(size: CGFloat, weight: NSFont.Weight = .regular) -> NSFont {
-        let system = NSFont.systemFont(ofSize: size, weight: weight)
-        switch Prefs.fontFamily {
-        case "system":
-            return system
-        case "rounded", "serif":
-            let design: NSFontDescriptor.SystemDesign = Prefs.fontFamily == "rounded" ? .rounded : .serif
-            guard let d = system.fontDescriptor.withDesign(design) else { return system }
-            return NSFont(descriptor: d, size: size) ?? system
-        case "mono":
-            return .monospacedSystemFont(ofSize: size, weight: weight)
-        case let family:
-            let bold = weight.rawValue >= NSFont.Weight.semibold.rawValue
-            return NSFontManager.shared.font(withFamily: family, traits: bold ? .boldFontMask : [],
-                                             weight: bold ? 9 : 5, size: size) ?? system
-        }
+        FontLibrary.textFont(Prefs.fontFamily, size: size, weight: weight)
     }
 
     private func makeFonts() {
         body = Self.editorFont(size: baseSize)
-        mono = .monospacedSystemFont(ofSize: (baseSize * 0.9 * 2).rounded() / 2, weight: .regular)
-        monoSmall = .monospacedSystemFont(ofSize: baseSize - 3, weight: .medium)
+        mono = FontLibrary.codeFont(Prefs.codeFont, size: (baseSize * 0.9 * 2).rounded() / 2)
+        monoSmall = FontLibrary.codeFont(Prefs.codeFont, size: baseSize - 3, weight: .medium)
         spaceWidth = (" " as NSString).size(withAttributes: [.font: body]).width
 
         let p = NSMutableParagraphStyle()

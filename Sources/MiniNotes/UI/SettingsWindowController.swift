@@ -62,6 +62,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private let iCloudHint = NSTextField(labelWithString: "")
     private let themePopup = NSPopUpButton()
     private let fontPopup = NSPopUpButton()
+    private let codeFontPopup = NSPopUpButton()
     private let widthPopup = NSPopUpButton()
     private let spacingPopup = NSPopUpButton()
     private let registerHotKey: () -> Bool
@@ -156,6 +157,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             [label("Toggle window:"), row(recorder, status)],
             [label("Theme:"), themePopup],
             [label("Font:"), fontPopup],
+            [label("Code font:"), codeFontPopup],
             [label("Line width:"), widthPopup],
             [label("Line spacing:"), spacingPopup],
             [NSGridCell.emptyContentView, autoPair],
@@ -174,10 +176,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         grid.columnSpacing = 10
         grid.rowSpacing = 12
         grid.row(at: 2).topPadding = 8
-        grid.row(at: 6).topPadding = 8
-        grid.row(at: 9).topPadding = 8
-        grid.row(at: 10).topPadding = -6
-        grid.row(at: 13).topPadding = 8
+        grid.row(at: 7).topPadding = 8
+        grid.row(at: 10).topPadding = 8
+        grid.row(at: 11).topPadding = -6
+        grid.row(at: 14).topPadding = 8
         grid.translatesAutoresizingMaskIntoConstraints = false
 
         let content = NSView()
@@ -220,26 +222,23 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func buildEditorMenus() {
-        let fonts = NSMenu()
-        func fontItem(_ title: String, _ value: String, _ font: NSFont? = nil) {
-            let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
-            item.representedObject = value
-            if let font { item.attributedTitle = NSAttributedString(string: title, attributes: [.font: font]) }
-            fonts.addItem(item)
-        }
         let size = NSFont.systemFontSize
-        fontItem("System", "system", .systemFont(ofSize: size))
-        if let d = NSFont.systemFont(ofSize: size).fontDescriptor.withDesign(.rounded) { fontItem("Rounded", "rounded", NSFont(descriptor: d, size: size)) }
-        if let d = NSFont.systemFont(ofSize: size).fontDescriptor.withDesign(.serif) { fontItem("Serif", "serif", NSFont(descriptor: d, size: size)) }
-        fontItem("Monospaced", "mono", .monospacedSystemFont(ofSize: size, weight: .regular))
-        fonts.addItem(.separator())
-        for family in NSFontManager.shared.availableFontFamilies where !family.hasPrefix(".") {
-            fontItem(family, family, NSFont(name: family, size: size))
-        }
-        fontPopup.menu = fonts
+        fontPopup.menu = fontMenu(sections: [
+            ("Built in", FontLibrary.builtInText.map { ($0.id, $0.name) }),
+            ("Included", FontLibrary.bundledText.map { ($0.id, $0.name) }),
+            ("Installed on this Mac", FontLibrary.installedFamilies(monospacedOnly: false).map { ($0, $0) }),
+        ], preview: { FontLibrary.textFont($0, size: size) })
         fontPopup.target = self
         fontPopup.action = #selector(fontChanged(_:))
         select(fontPopup, Prefs.fontFamily)
+
+        codeFontPopup.menu = fontMenu(sections: [
+            ("", FontLibrary.codeFonts.map { ($0.id, $0.name) }),
+            ("Installed on this Mac", FontLibrary.installedFamilies(monospacedOnly: true).map { ($0, $0) }),
+        ], preview: { FontLibrary.codeFont($0, size: size) })
+        codeFontPopup.target = self
+        codeFontPopup.action = #selector(codeFontChanged(_:))
+        select(codeFontPopup, Prefs.codeFont)
 
         func fill(_ popup: NSPopUpButton, _ options: [(String, CGFloat)], _ current: CGFloat, _ action: Selector) {
             popup.removeAllItems()
@@ -253,6 +252,32 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         }
         fill(widthPopup, [("Narrow", 560), ("Medium", 720), ("Wide", 920), ("Full Width", 0)], Prefs.lineWidth, #selector(widthChanged(_:)))
         fill(spacingPopup, [("Compact", 0.15), ("Normal", 0.32), ("Relaxed", 0.55)], Prefs.lineSpacing, #selector(spacingChanged(_:)))
+    }
+
+    /// A menu of fonts in sections, each name drawn in its own font.
+    private func fontMenu(sections: [(String, [(id: String, name: String)])], preview: (String) -> NSFont) -> NSMenu {
+        let menu = NSMenu()
+        for (title, fonts) in sections where !fonts.isEmpty {
+            if menu.numberOfItems > 0 { menu.addItem(.separator()) }
+            if !title.isEmpty {
+                let header = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+                header.isEnabled = false
+                menu.addItem(header)
+            }
+            for font in fonts {
+                let item = NSMenuItem(title: font.name, action: nil, keyEquivalent: "")
+                item.representedObject = font.id
+                item.attributedTitle = NSAttributedString(string: font.name, attributes: [.font: preview(font.id)])
+                menu.addItem(item)
+            }
+        }
+        return menu
+    }
+
+    @objc private func codeFontChanged(_ sender: NSPopUpButton) {
+        guard let value = sender.selectedItem?.representedObject as? String else { return }
+        Prefs.codeFont = value
+        NotificationCenter.default.post(name: .editorSettingsDidChange, object: nil)
     }
 
     private func select(_ popup: NSPopUpButton, _ value: String) {

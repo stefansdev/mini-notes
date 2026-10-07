@@ -21,7 +21,7 @@ Written in Swift with AppKit + TextKit — no Electron, no web view. ~600 KB, la
 - **Themes** — 18 popular editor themes (GitHub, VS Code, One Dark, Dracula, Catppuccin, Tokyo Night, Nord, Gruvbox, Solarized, Rosé Pine…) with live preview, plus auto light/dark pairs
 - **iCloud sync** — one checkbox moves your notes to iCloud Drive; edits from your other Macs show up live
 - **Plain files** — every note is a `.md` file you own; deleted notes go to the Trash
-- **Your font** — System, Rounded, Serif, Monospaced or any installed font; adjustable line width and spacing
+- **Fonts** — SF Pro by default, plus bundled Inter, Geist, iA Writer Quattro, Atkinson Hyperlegible, Literata and JetBrains Mono (or any installed font); a separate code font (SF Mono, JetBrains Mono, Fira Code, Geist Mono, IBM Plex Mono); adjustable line width and spacing
 - **Auto-updates** from GitHub Releases, or install and update with Homebrew
 - Float on top, light/dark mode, menu bar icon, open at login, adjustable text size
 
@@ -102,6 +102,19 @@ Press <kbd>⌥⌘T</kbd> (or <kbd>⌘K</kbd> → *Change Theme…*) and arrow th
 "Auto" themes switch between their light and dark variant with macOS. Themes live in [`Theme.swift`](Sources/MiniNotes/Theme.swift) as ten colors each — adding one is a single `ThemeSpec` entry.
 
 In the <kbd>⌘P</kbd> list: <kbd>↩</kbd> open, <kbd>⇧⌘P</kbd> pin/unpin, <kbd>⌘D</kbd> duplicate, <kbd>⌘⌫</kbd> delete.
+
+## Fonts
+
+Pick a font in **Settings → Font**, or press <kbd>⌘K</kbd> → *Change Font…* to preview them live. Code blocks and inline code use the **Code font** setting.
+
+<p align="center"><img src="docs/fonts.png" alt="SF Pro, Inter, iA Writer Quattro, Literata, Atkinson Hyperlegible and Geist"></p>
+
+| | |
+|---|---|
+| **Built in** (macOS) | SF Pro, SF Pro Rounded, New York, SF Mono |
+| **Included** | [Inter](https://github.com/rsms/inter), [Geist & Geist Mono](https://github.com/vercel/geist-font), [iA Writer Quattro](https://github.com/iaolo/iA-Fonts), [Atkinson Hyperlegible Next](https://github.com/googlefonts/atkinson-hyperlegible-next), [Literata](https://github.com/googlefonts/literata), [JetBrains Mono](https://github.com/JetBrains/JetBrainsMono), [Fira Code](https://github.com/tonsky/FiraCode), [IBM Plex Mono](https://github.com/IBM/plex) |
+
+The included fonts are unmodified and distributed under the [SIL Open Font License 1.1](Resources/Fonts/Licenses); they're only available inside Mini Notes and don't get installed system-wide.
 
 ## Storage & sync
 

@@ -16,6 +16,8 @@ struct PaletteItem {
     var symbol: String = "doc.text"
     /// Shown instead of `symbol` when set (e.g. theme swatches).
     var image: NSImage? = nil
+    /// Draws the title in this font (font picker).
+    var titleFont: NSFont? = nil
     /// Starts selected when the palette opens.
     var isCurrent: Bool = false
     /// Runs when the row becomes selected (live preview).
@@ -354,6 +356,7 @@ private final class PaletteCell: NSTableCellView {
         icon.image = item.image ?? NSImage(systemSymbolName: item.symbol, accessibilityDescription: nil)
         icon.contentTintColor = Theme.secondary
         title.textColor = Theme.text
+        title.font = item.titleFont ?? .systemFont(ofSize: 13.5, weight: .medium)
         subtitle.textColor = Theme.tertiary
         accessory.textColor = Theme.tertiary
         title.stringValue = item.title

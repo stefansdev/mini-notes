@@ -28,6 +28,7 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/MiniNotes"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
+cp -R Resources/Fonts "$APP/Contents/Resources/Fonts"
 codesign --force --sign - "$APP" >/dev/null
 echo "Built $APP"
 

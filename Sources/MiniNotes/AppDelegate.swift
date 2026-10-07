@@ -9,6 +9,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         Prefs.registerDefaults()
+        FontLibrary.registerBundledFonts()
         _ = ThemeManager.shared
         controller = NotesWindowController()
         controller.openSettings = { [weak self] in self?.openSettings(nil) }
@@ -395,6 +396,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NotesStore.shared.togglePin(pinNote.id)
         NotesStore.shared.load()
         check("pin persists on disk", "", { tv in if !NotesStore.shared.isPinned(pinNote.id) { tv.string = "lost pin" } }, expect: "")
+
+        // Bundled fonts: each family loads, with real bold and italic faces
+        for choice in FontLibrary.bundledText where !["system", "rounded", "serif", "mono"].contains(choice.id) {
+            let regular = FontLibrary.textFont(choice.id, size: 15)
+            let bold = FontLibrary.textFont(choice.id, size: 15, weight: .bold)
+            let italicDesc = regular.fontDescriptor.withSymbolicTraits(regular.fontDescriptor.symbolicTraits.union(.italic))
+            let italic = NSFont(descriptor: italicDesc, size: 15)
+            let ok = regular.familyName == choice.id
+                && bold.familyName == choice.id && bold.fontDescriptor.symbolicTraits.contains(.bold)
+                && italic?.familyName == choice.id && italic?.fontDescriptor.symbolicTraits.contains(.italic) == true
+            check("font \(choice.name): regular/bold/italic", "", { tv in
+                if !ok { tv.string = "\(regular.fontName) / \(bold.fontName) / \(italic?.fontName ?? "nil")" }
+            }, expect: "")
+        }
+        for choice in FontLibrary.codeFonts {
+            let f = FontLibrary.codeFont(choice.id, size: 13)
+            let ok = f.isFixedPitch && (choice.id == "system" || f.familyName == choice.id)
+            check("code font \(choice.name)", "", { tv in if !ok { tv.string = "\(f.fontName) fixed=\(f.isFixedPitch)" } }, expect: "")
+        }
 
         // Font family
         let savedFamily = Prefs.fontFamily
