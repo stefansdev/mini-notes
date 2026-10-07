@@ -61,6 +61,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private let iCloud = NSButton(checkboxWithTitle: "Sync notes with iCloud Drive", target: nil, action: nil)
     private let iCloudHint = NSTextField(labelWithString: "")
     private let themePopup = NSPopUpButton()
+    private let fontPopup = NSPopUpButton()
+    private let widthPopup = NSPopUpButton()
+    private let spacingPopup = NSPopUpButton()
     private let registerHotKey: () -> Bool
     private let floatChanged: () -> Void
     private let folderChanged: () -> Void
@@ -119,6 +122,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         folderLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         refreshFolder()
 
+        let autoUpdate = NSButton(checkboxWithTitle: "Check for updates automatically", target: self, action: #selector(toggleAutoUpdate(_:)))
+        autoUpdate.state = Prefs.autoCheckUpdates ? .on : .off
+        let checkNow = NSButton(title: "Check Now", target: self, action: #selector(checkNow))
+        let version = NSTextField(labelWithString: "Version \(Updater.shared.currentVersion)")
+        version.textColor = .secondaryLabelColor
+        version.font = .systemFont(ofSize: 11)
+
         let change = NSButton(title: "Change…", target: self, action: #selector(changeFolder))
         let reveal = NSButton(title: "Show in Finder", target: self, action: #selector(revealFolder))
 
@@ -135,6 +145,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         }
 
         buildThemeMenu()
+        buildEditorMenus()
+        let autoPair = NSButton(checkboxWithTitle: "Auto-close brackets, quotes and **", target: self, action: #selector(toggleAutoPair(_:)))
+        autoPair.state = Prefs.autoPair ? .on : .off
         NotificationCenter.default.addObserver(forName: .themeDidChange, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.selectCurrentTheme() }
         }
@@ -142,6 +155,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         let grid = NSGridView(views: [
             [label("Toggle window:"), row(recorder, status)],
             [label("Theme:"), themePopup],
+            [label("Font:"), fontPopup],
+            [label("Line width:"), widthPopup],
+            [label("Line spacing:"), spacingPopup],
+            [NSGridCell.emptyContentView, autoPair],
             [NSGridCell.emptyContentView, float],
             [NSGridCell.emptyContentView, hide],
             [NSGridCell.emptyContentView, login],
@@ -149,13 +166,18 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             [NSGridCell.emptyContentView, iCloudHint],
             [label("Notes folder:"), folderLabel],
             [NSGridCell.emptyContentView, row(change, reveal)],
+            [label("Updates:"), autoUpdate],
+            [NSGridCell.emptyContentView, row(checkNow, version)],
         ])
         grid.column(at: 0).xPlacement = .trailing
         grid.rowAlignment = .firstBaseline
         grid.columnSpacing = 10
         grid.rowSpacing = 12
-        grid.row(at: 5).topPadding = 8
-        grid.row(at: 6).topPadding = -6
+        grid.row(at: 2).topPadding = 8
+        grid.row(at: 6).topPadding = 8
+        grid.row(at: 9).topPadding = 8
+        grid.row(at: 10).topPadding = -6
+        grid.row(at: 13).topPadding = 8
         grid.translatesAutoresizingMaskIntoConstraints = false
 
         let content = NSView()
@@ -195,6 +217,75 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         themePopup.target = self
         themePopup.action = #selector(themeChanged(_:))
         selectCurrentTheme()
+    }
+
+    private func buildEditorMenus() {
+        let fonts = NSMenu()
+        func fontItem(_ title: String, _ value: String, _ font: NSFont? = nil) {
+            let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+            item.representedObject = value
+            if let font { item.attributedTitle = NSAttributedString(string: title, attributes: [.font: font]) }
+            fonts.addItem(item)
+        }
+        let size = NSFont.systemFontSize
+        fontItem("System", "system", .systemFont(ofSize: size))
+        if let d = NSFont.systemFont(ofSize: size).fontDescriptor.withDesign(.rounded) { fontItem("Rounded", "rounded", NSFont(descriptor: d, size: size)) }
+        if let d = NSFont.systemFont(ofSize: size).fontDescriptor.withDesign(.serif) { fontItem("Serif", "serif", NSFont(descriptor: d, size: size)) }
+        fontItem("Monospaced", "mono", .monospacedSystemFont(ofSize: size, weight: .regular))
+        fonts.addItem(.separator())
+        for family in NSFontManager.shared.availableFontFamilies where !family.hasPrefix(".") {
+            fontItem(family, family, NSFont(name: family, size: size))
+        }
+        fontPopup.menu = fonts
+        fontPopup.target = self
+        fontPopup.action = #selector(fontChanged(_:))
+        select(fontPopup, Prefs.fontFamily)
+
+        func fill(_ popup: NSPopUpButton, _ options: [(String, CGFloat)], _ current: CGFloat, _ action: Selector) {
+            popup.removeAllItems()
+            for (title, value) in options {
+                popup.addItem(withTitle: title)
+                popup.lastItem?.representedObject = value
+            }
+            popup.target = self
+            popup.action = action
+            if let item = popup.itemArray.first(where: { ($0.representedObject as? CGFloat) == current }) { popup.select(item) }
+        }
+        fill(widthPopup, [("Narrow", 560), ("Medium", 720), ("Wide", 920), ("Full Width", 0)], Prefs.lineWidth, #selector(widthChanged(_:)))
+        fill(spacingPopup, [("Compact", 0.15), ("Normal", 0.32), ("Relaxed", 0.55)], Prefs.lineSpacing, #selector(spacingChanged(_:)))
+    }
+
+    private func select(_ popup: NSPopUpButton, _ value: String) {
+        if let item = popup.itemArray.first(where: { $0.representedObject as? String == value }) { popup.select(item) }
+    }
+
+    @objc private func fontChanged(_ sender: NSPopUpButton) {
+        guard let value = sender.selectedItem?.representedObject as? String else { return }
+        Prefs.fontFamily = value
+        NotificationCenter.default.post(name: .editorSettingsDidChange, object: nil)
+    }
+
+    @objc private func widthChanged(_ sender: NSPopUpButton) {
+        guard let value = sender.selectedItem?.representedObject as? CGFloat else { return }
+        Prefs.lineWidth = value
+        NotificationCenter.default.post(name: .editorSettingsDidChange, object: nil)
+    }
+
+    @objc private func spacingChanged(_ sender: NSPopUpButton) {
+        guard let value = sender.selectedItem?.representedObject as? CGFloat else { return }
+        Prefs.lineSpacing = value
+        NotificationCenter.default.post(name: .editorSettingsDidChange, object: nil)
+    }
+
+    @objc private func toggleAutoUpdate(_ sender: NSButton) {
+        Prefs.autoCheckUpdates = sender.state == .on
+        Updater.shared.start()
+    }
+
+    @objc private func checkNow() { Updater.shared.check(userInitiated: true) }
+
+    @objc private func toggleAutoPair(_ sender: NSButton) {
+        Prefs.autoPair = sender.state == .on
     }
 
     private func selectCurrentTheme() {

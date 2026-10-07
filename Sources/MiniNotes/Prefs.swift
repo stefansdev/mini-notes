@@ -72,3 +72,41 @@ extension Prefs {
         set { UserDefaults.standard.set(newValue, forKey: "themeID") }
     }
 }
+
+extension Prefs {
+    /// Auto-close brackets, quotes, backticks and **.
+    static var autoPair: Bool {
+        get { UserDefaults.standard.object(forKey: "autoPair") as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: "autoPair") }
+    }
+
+    /// "system", "rounded", "serif", "mono", or a font family name.
+    static var fontFamily: String {
+        get { UserDefaults.standard.string(forKey: "fontFamily") ?? "system" }
+        set { UserDefaults.standard.set(newValue, forKey: "fontFamily") }
+    }
+
+    /// Max text column width in points; 0 = full window width.
+    static var lineWidth: CGFloat {
+        get { UserDefaults.standard.object(forKey: "lineWidth") as? CGFloat ?? 720 }
+        set { UserDefaults.standard.set(newValue, forKey: "lineWidth") }
+    }
+
+    /// Extra space between lines as a fraction of the font size.
+    static var lineSpacing: CGFloat {
+        get { UserDefaults.standard.object(forKey: "lineSpacing") as? CGFloat ?? 0.32 }
+        set { UserDefaults.standard.set(newValue, forKey: "lineSpacing") }
+    }
+}
+
+extension Prefs {
+    static var autoCheckUpdates: Bool {
+        get { UserDefaults.standard.object(forKey: "autoCheckUpdates") as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: "autoCheckUpdates") }
+    }
+
+    static var skippedVersion: String? {
+        get { UserDefaults.standard.string(forKey: "skippedVersion") }
+        set { UserDefaults.standard.set(newValue, forKey: "skippedVersion") }
+    }
+}

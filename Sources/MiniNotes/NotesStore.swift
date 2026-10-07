@@ -62,6 +62,8 @@ final class NotesStore {
 
     private(set) var notes: [String: Note] = [:]
     private(set) var folder: URL
+    /// Pinned note ids, stored in `.mininotes.json` inside the folder so they sync with the notes.
+    private(set) var pinned: [String] = []
     private var dirty = Set<String>()
     /// File modification date last seen (or written) per note; used to detect external changes.
     private var diskDates: [String: Date] = [:]
@@ -131,7 +133,32 @@ final class NotesStore {
             notes[note.id] = note
             diskDates[note.id] = date
         }
+        loadMeta()
         watch()
+    }
+
+    // MARK: - Pins
+
+    private var metaURL: URL { folder.appendingPathComponent(".mininotes.json") }
+
+    private func loadMeta() {
+        guard let data = try? Data(contentsOf: metaURL),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { pinned = []; return }
+        pinned = (json["pinned"] as? [String]) ?? []
+    }
+
+    private func saveMeta() {
+        let json: [String: Any] = ["pinned": pinned.filter { notes[$0] != nil }]
+        if let data = try? JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted, .sortedKeys]) {
+            try? data.write(to: metaURL)
+        }
+    }
+
+    func isPinned(_ id: String) -> Bool { pinned.contains(id) }
+
+    func togglePin(_ id: String) {
+        if let i = pinned.firstIndex(of: id) { pinned.remove(at: i) } else { pinned.insert(id, at: 0) }
+        saveMeta()
     }
 
     /// Re-reads the folder and merges changes made elsewhere. Unsaved local edits always win.
@@ -157,6 +184,9 @@ final class NotesStore {
             diskDates[id] = nil
             changed.insert(id)
         }
+        let oldPins = pinned
+        loadMeta()
+        if pinned != oldPins { changed.formUnion(Set(pinned).symmetricDifference(oldPins)) }
         if !changed.isEmpty {
             NotificationCenter.default.post(name: .notesChangedOnDisk, object: self, userInfo: ["ids": changed])
         }
@@ -237,6 +267,10 @@ final class NotesStore {
     }
 
     func delete(_ id: String) {
+        if let i = pinned.firstIndex(of: id) {
+            pinned.remove(at: i)
+            saveMeta()
+        }
         notes[id] = nil
         dirty.remove(id)
         diskDates[id] = nil

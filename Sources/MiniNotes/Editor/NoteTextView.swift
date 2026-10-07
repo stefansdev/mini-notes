@@ -25,10 +25,7 @@ final class NoteTextView: NSTextView {
         }
     }
 
-    override func didChangeText() {
-        super.didChangeText()
-        if (textStorage?.length ?? 0) < 2 { needsDisplay = true }
-    }
+
 
     // MARK: - Keys
 
@@ -62,6 +59,11 @@ final class NoteTextView: NSTextView {
     private static let taskShortcutRE = re(#"^([ \t]*)(?:[-*+][ \t]+)?\[([ xX]?)\] $"#)
 
     override func insertText(_ string: Any, replacementRange: NSRange) {
+        if let typed = (string as? String) ?? (string as? NSAttributedString)?.string,
+           replacementRange.location == NSNotFound || replacementRange == selectedRange(),
+           handleAutoPair(typed) {
+            return
+        }
         super.insertText(string, replacementRange: replacementRange)
         guard (string as? String) == " " || (string as? NSAttributedString)?.string == " ", !hasMarkedText() else { return }
         let ns = self.string as NSString
@@ -74,8 +76,13 @@ final class NoteTextView: NSTextView {
         let mark = b.substring(with: m.range(at: 2)).lowercased() == "x" ? "x" : " "
         let task = indent + "- [\(mark)] "
         guard task != before else { return }
-        // Its own undo step: ⌘Z right after brings back the literal "[] ".
+        // Its own undo step: ⌘Z right after brings back the literal "[] ". The space was typed in this
+        // same event, so close the event's undo group first; otherwise both are undone together.
         breakUndoCoalescing()
+        if let um = undoManager, um.groupingLevel > 0 {
+            um.endUndoGrouping()
+            um.beginUndoGrouping()
+        }
         replace(NSRange(location: lineStart, length: b.length), with: task,
                 select: NSRange(location: lineStart + (task as NSString).length, length: 0))
         breakUndoCoalescing()
@@ -137,6 +144,7 @@ final class NoteTextView: NSTextView {
 
     override func deleteBackward(_ sender: Any?) {
         let sel = selectedRange()
+        if sel.length == 0, Prefs.autoPair, !hasMarkedText(), deleteEmptyPair(at: sel.location) { return }
         if sel.length == 0, sel.location > 0, !hasMarkedText() {
             let ns = string as NSString
             let ls = ns.lineRange(for: NSRange(location: sel.location, length: 0)).location
@@ -158,10 +166,336 @@ final class NoteTextView: NSTextView {
         super.deleteBackward(sender)
     }
 
+    // MARK: - Folding
+
+    var onFoldsChanged: (() -> Void)?
+    private var foldTracking: NSTrackingArea?
+    private var hoveredHeading: Int? {
+        didSet { if oldValue != hoveredHeading { gutter.needsDisplay = true } }
+    }
+
+    /// NSTextView clips its own drawing to the text area, so the chevrons live in an overlay
+    /// covering the left margin (it ignores clicks; the text view handles them).
+    private lazy var gutter: FoldGutterView = {
+        let v = FoldGutterView()
+        v.owner = self
+        addSubview(v)
+        return v
+    }()
+
+    override func viewWillDraw() {
+        super.viewWillDraw()
+        let frame = NSRect(x: 0, y: 0, width: textContainerOrigin.x, height: bounds.height)
+        if gutter.frame != frame { gutter.frame = frame }
+    }
+
+    override func didChangeText() {
+        super.didChangeText()
+        if (textStorage?.length ?? 0) < 2 { needsDisplay = true }
+        gutter.needsDisplay = true
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let foldTracking { removeTrackingArea(foldTracking) }
+        let t = NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self)
+        addTrackingArea(t)
+        foldTracking = t
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        super.mouseExited(with: event)
+        hoveredHeading = nil
+    }
+
+    /// Line start of the heading under `p` (any x on its line).
+    private func headingLine(at p: NSPoint) -> Int? {
+        guard let lm = mdLayout, let tc = textContainer, let ts = textStorage, ts.length > 0 else { return nil }
+        let cp = NSPoint(x: 1, y: p.y - textContainerOrigin.y)
+        let g = lm.glyphIndex(for: cp, in: tc)
+        let frag = lm.lineFragmentRect(forGlyphAt: g, effectiveRange: nil)
+        guard cp.y >= frag.minY, cp.y <= frag.maxY else { return nil }
+        let ci = min(lm.characterIndexForGlyph(at: g), ts.length - 1)
+        let start = (string as NSString).lineRange(for: NSRange(location: ci, length: 0)).location
+        guard lm.folds[start] != nil || lm.isFoldable(start) else { return nil }
+        return start
+    }
+
+    private func chevronRect(forHeadingAt start: Int) -> NSRect? {
+        guard let lm = mdLayout, let ts = textStorage, start < ts.length else { return nil }
+        let g = lm.glyphIndexForCharacter(at: start)
+        let frag = lm.lineFragmentRect(forGlyphAt: g, effectiveRange: nil)
+        let baseline = frag.minY + lm.location(forGlyphAt: g).y
+        let font = (ts.attribute(.font, at: start, effectiveRange: nil) as? NSFont) ?? .systemFont(ofSize: 15)
+        let size: CGFloat = 14
+        let midY = textContainerOrigin.y + baseline - font.capHeight / 2
+        return NSRect(x: textContainerOrigin.x - 22, y: midY - size / 2, width: size, height: size)
+    }
+
+    /// Heading whose chevron or "⋯" pill is under `p`.
+    private func foldTarget(at p: NSPoint) -> Int? {
+        guard let lm = mdLayout else { return nil }
+        for start in lm.folds.keys {
+            if let pill = lm.foldPillRect(forHeadingAt: start)?.offsetBy(dx: textContainerOrigin.x, dy: textContainerOrigin.y),
+               pill.insetBy(dx: -3, dy: -3).contains(p) { return start }
+        }
+        if p.x < textContainerOrigin.x, let start = headingLine(at: p),
+           let rect = chevronRect(forHeadingAt: start), rect.insetBy(dx: -8, dy: -6).contains(p) {
+            return start
+        }
+        return nil
+    }
+
+    private func handleFoldClick(at p: NSPoint) -> Bool {
+        guard let start = foldTarget(at: p) else { return false }
+        toggleFold(at: start)
+        return true
+    }
+
+    private func toggleFold(at start: Int) {
+        guard let lm = mdLayout else { return }
+        let folding = lm.folds[start] == nil
+        if folding, let r = lm.foldRange(forHeadingAt: start) {
+            // Keep the caret visible: move it out of the section being hidden.
+            let sel = selectedRange()
+            if NSMaxRange(sel) > r.location, sel.location <= NSMaxRange(r) {
+                setSelectedRange(NSRange(location: r.location, length: 0))
+            }
+        }
+        lm.toggleFold(at: start)
+        needsDisplay = true
+        gutter.needsDisplay = true
+        onFoldsChanged?()
+    }
+
+    fileprivate func drawFoldChevrons() {
+        guard let lm = mdLayout else { return }
+        var heads = Set(lm.folds.keys)
+        if let h = hoveredHeading { heads.insert(h) }
+        for start in heads {
+            guard let rect = chevronRect(forHeadingAt: start) else { continue }
+            let folded = lm.folds[start] != nil
+            let config = NSImage.SymbolConfiguration(pointSize: 10, weight: .bold)
+                .applying(.init(paletteColors: [folded ? Theme.secondary : Theme.tertiary]))
+            guard let img = NSImage(systemSymbolName: folded ? "chevron.right" : "chevron.down",
+                                    accessibilityDescription: folded ? "Expand" : "Collapse")?
+                .withSymbolConfiguration(config) else { continue }
+            let s = img.size
+            img.draw(in: NSRect(x: rect.midX - s.width / 2, y: rect.midY - s.height / 2, width: s.width, height: s.height),
+                     from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
+        }
+    }
+
+    /// Folds/unfolds the section the caret is in (nearest heading at or above it).
+    @objc func toggleFoldAtCaret(_ sender: Any?) {
+        guard let lm = mdLayout else { return }
+        let ns = string as NSString
+        var lineStart = ns.lineRange(for: NSRange(location: min(selectedRange().location, ns.length), length: 0)).location
+        while true {
+            if lm.headingLevel(at: lineStart) != nil, lm.folds[lineStart] != nil || lm.isFoldable(lineStart) {
+                toggleFold(at: lineStart)
+                return
+            }
+            guard lineStart > 0 else { NSSound.beep(); return }
+            lineStart = ns.lineRange(for: NSRange(location: lineStart - 1, length: 0)).location
+        }
+    }
+
+    @objc func unfoldAllSections(_ sender: Any?) {
+        mdLayout?.unfoldAll()
+        needsDisplay = true
+        gutter.needsDisplay = true
+        onFoldsChanged?()
+    }
+
+    /// Redraws fold chevrons (e.g. after folds change from outside).
+    func refreshFoldGutter() {
+        gutter.needsDisplay = true
+    }
+
+    // MARK: - Auto-closing pairs
+
+    private static let pairs: [Character: Character] = ["(": ")", "[": "]", "{": "}", "\"": "\"", "'": "'", "`": "`"]
+    private static let closers: Set<Character> = [")", "]", "}", "\"", "'", "`"]
+    private static let wrappers: Set<Character> = ["*", "_", "~", "="]
+
+    private func char(at i: Int, _ ns: NSString) -> Character? {
+        guard i >= 0, i < ns.length, let s = Unicode.Scalar(ns.character(at: i)) else { return nil }
+        return Character(s)
+    }
+
+    private var caretInCode: Bool {
+        guard let ts = textStorage, ts.length > 0 else { return false }
+        let i = min(max(0, selectedRange().location - 1), ts.length - 1)
+        return ts.attribute(.mdCodeBlock, at: i, effectiveRange: nil) != nil
+    }
+
+    /// Returns true when it handled the keystroke.
+    private func handleAutoPair(_ typed: String) -> Bool {
+        guard Prefs.autoPair, !hasMarkedText(), typed.count == 1, let c = typed.first else { return false }
+        let ns = string as NSString
+        let sel = selectedRange()
+        let prev = char(at: sel.location - 1, ns)
+        let next = char(at: NSMaxRange(sel), ns)
+
+        // Wrap a selection: (sel) "sel" `sel` **sel** …
+        if sel.length > 0, let close = Self.pairs[c] ?? (Self.wrappers.contains(c) ? c : nil) {
+            let text = ns.substring(with: sel)
+            guard !text.contains("\n") || c == "`" else { return false }
+            replace(sel, with: String(c) + text + String(close), select: NSRange(location: sel.location + 1, length: sel.length))
+            return true
+        }
+        guard sel.length == 0 else { return false }
+
+        // Step over a closer that's already there (including the ** of an auto-closed bold).
+        if c == "*", next == "*", prev != nil, !prev!.isWhitespace, !caretInCode {
+            setSelectedRange(NSRange(location: sel.location + 1, length: 0))
+            return true
+        }
+        if Self.closers.contains(c), next == c, !(c == "`" && prev == "`" && char(at: sel.location - 2, ns) == "`") {
+            setSelectedRange(NSRange(location: sel.location + 1, length: 0))
+            return true
+        }
+
+        let nextIsBoundary = next == nil || next!.isWhitespace || Self.closers.contains(next!) || next == "," || next == "." || next == ";"
+        guard nextIsBoundary else { return false }
+
+        switch c {
+        case "(", "[", "{":
+            break
+        case "\"", "'":
+            // Not after a letter (don't, it's) and not inside a word.
+            if let p = prev, p.isLetter || p.isNumber { return false }
+        case "`":
+            // Typing ``` should produce a fence, not nested pairs.
+            if prev == "`" { return false }
+        case "*":
+            // Second * of ** → **|** (not in code, not a third star).
+            guard prev == "*", char(at: sel.location - 2, ns) != "*", !caretInCode else { return false }
+            insertPair("*", "**")
+            return true
+        default:
+            return false
+        }
+        insertPair(String(c), String(Self.pairs[c]!))
+        return true
+    }
+
+    /// Types `open` normally, then adds `close` after the caret as a separate edit. (Inserting both and
+    /// moving the caret back confuses NSTextView's typing position: the next key lands after the closer.)
+    private func insertPair(_ open: String, _ close: String) {
+        super.insertText(open, replacementRange: NSRange(location: NSNotFound, length: 0))
+        let caret = NSRange(location: selectedRange().location, length: 0)
+        guard shouldChangeText(in: caret, replacementString: close) else { return }
+        textStorage?.replaceCharacters(in: caret, with: close)
+        didChangeText()
+        setSelectedRange(caret)
+    }
+
+    private func deleteEmptyPair(at loc: Int) -> Bool {
+        let ns = string as NSString
+        if loc >= 2, loc + 2 <= ns.length,
+           ns.substring(with: NSRange(location: loc - 2, length: 4)) == "****" {
+            replace(NSRange(location: loc - 2, length: 4), with: "", select: NSRange(location: loc - 2, length: 0))
+            return true
+        }
+        guard let p = char(at: loc - 1, ns), let n = char(at: loc, ns), Self.pairs[p] == n else { return false }
+        replace(NSRange(location: loc - 1, length: 2), with: "", select: NSRange(location: loc - 1, length: 0))
+        return true
+    }
+
+    // MARK: - Line commands
+
+    @objc func moveLineUp(_ sender: Any?) { moveLines(up: true) }
+    @objc func moveLineDown(_ sender: Any?) { moveLines(up: false) }
+
+    private func moveLines(up: Bool) {
+        let ns = string as NSString
+        let sel = selectedRange()
+        let block = ns.paragraphRange(for: sel)
+        func strip(_ s: String) -> String { s.hasSuffix("\n") ? String(s.dropLast()) : s }
+        if up {
+            guard block.location > 0 else { return }
+            let above = ns.paragraphRange(for: NSRange(location: block.location - 1, length: 0))
+            let a = strip(ns.substring(with: above)), b = strip(ns.substring(with: block))
+            let whole = NSUnionRange(above, block)
+            let trailing = ns.substring(with: whole).hasSuffix("\n") ? "\n" : ""
+            replace(whole, with: b + "\n" + a + trailing,
+                    select: NSRange(location: sel.location - (above.length), length: sel.length))
+        } else {
+            guard NSMaxRange(block) < ns.length else { return }
+            let below = ns.paragraphRange(for: NSRange(location: NSMaxRange(block), length: 0))
+            let b = strip(ns.substring(with: block)), c = strip(ns.substring(with: below))
+            let whole = NSUnionRange(block, below)
+            let trailing = ns.substring(with: whole).hasSuffix("\n") ? "\n" : ""
+            replace(whole, with: c + "\n" + b + trailing,
+                    select: NSRange(location: sel.location + (c as NSString).length + 1, length: sel.length))
+        }
+    }
+
+    @objc func duplicateLine(_ sender: Any?) {
+        let ns = string as NSString
+        let sel = selectedRange()
+        let block = ns.paragraphRange(for: sel)
+        var text = ns.substring(with: block)
+        let insertAt = NSMaxRange(block)
+        if !text.hasSuffix("\n") {           // last line: prepend the newline instead
+            text = "\n" + text
+            replace(NSRange(location: insertAt, length: 0), with: text,
+                    select: NSRange(location: sel.location + (text as NSString).length, length: sel.length))
+        } else {
+            replace(NSRange(location: insertAt, length: 0), with: text,
+                    select: NSRange(location: sel.location + (text as NSString).length, length: sel.length))
+        }
+    }
+
+    // MARK: - Paste
+
+    override func paste(_ sender: Any?) {
+        if pasteLinkOverSelection() { return }
+        super.paste(sender)
+    }
+
+    override func pasteAsPlainText(_ sender: Any?) {
+        if pasteLinkOverSelection() { return }
+        super.pasteAsPlainText(sender)
+    }
+
+    /// Pasting a URL over selected text makes a markdown link, like Notion and Raycast.
+    private func pasteLinkOverSelection() -> Bool {
+        let sel = selectedRange()
+        guard sel.length > 0, !caretInCode,
+              let raw = NSPasteboard.general.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !raw.isEmpty, !raw.contains(where: \.isWhitespace),
+              let scheme = URL(string: raw)?.scheme?.lowercased(), ["http", "https", "mailto"].contains(scheme) else { return false }
+        let text = (string as NSString).substring(with: sel)
+        guard !text.contains("\n"), URL(string: text)?.scheme == nil else { return false }
+        let link = "[\(text)](\(raw))"
+        replace(sel, with: link, select: NSRange(location: sel.location + (link as NSString).length, length: 0))
+        return true
+    }
+
+    // MARK: - Copy as rich text
+
+    override func copy(_ sender: Any?) {
+        super.copy(sender)
+        let sel = selectedRange()
+        guard sel.length > 0 else { return }
+        RichText.addRichTypes(markdown: (string as NSString).substring(with: sel), to: .general)
+    }
+
+    override func cut(_ sender: Any?) {
+        let sel = selectedRange()
+        let markdown = sel.length > 0 ? (string as NSString).substring(with: sel) : ""
+        super.cut(sender)
+        if !markdown.isEmpty { RichText.addRichTypes(markdown: markdown, to: .general) }
+    }
+
     // MARK: - Mouse
 
     override func mouseDown(with event: NSEvent) {
         let p = convert(event.locationInWindow, from: nil)
+        if handleFoldClick(at: p) { return }
         if let box = checkbox(at: p) {
             toggleCheckbox(box)
             return
@@ -175,6 +509,11 @@ final class NoteTextView: NSTextView {
 
     override func mouseMoved(with event: NSEvent) {
         let p = convert(event.locationInWindow, from: nil)
+        hoveredHeading = headingLine(at: p)
+        if foldTarget(at: p) != nil {
+            NSCursor.pointingHand.set()
+            return
+        }
         if checkbox(at: p) != nil || (event.modifierFlags.contains(.command) && link(at: p) != nil) {
             NSCursor.pointingHand.set()
             return
@@ -443,4 +782,12 @@ final class NoteTextView: NSTextView {
                     select: NSRange(location: pr.location + 4, length: (text as NSString).length))
         }
     }
+}
+
+/// Transparent overlay over the text view's left margin that draws heading fold chevrons.
+final class FoldGutterView: NSView {
+    weak var owner: NoteTextView?
+    override var isFlipped: Bool { true }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    override func draw(_ dirtyRect: NSRect) { owner?.drawFoldChevrons() }
 }

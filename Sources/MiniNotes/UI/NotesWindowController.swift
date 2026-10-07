@@ -1,5 +1,6 @@
 import AppKit
 import UniformTypeIdentifiers
+import Carbon.HIToolbox
 
 /// Fills itself with a color (drawn, not a layer color, so it composites in order with siblings).
 final class ColorView: NSView {
@@ -33,6 +34,8 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
     private var palette: PaletteView?
     private(set) var currentID: String?
     private var cursorMemory: [String: NSRange] = [:]
+    /// Folded heading positions per note, for this session.
+    private var foldMemory: [String: Set<Int>] = [:]
     private var countWork: DispatchWorkItem?
     private var flashWork: DispatchWorkItem?
     private var visibilityToken = 0
@@ -54,6 +57,7 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
         super.init()
         storage.delegate = styler
         layout.bodyFont = styler.body
+        styler.onCharactersEdited = { [weak layout] range, delta in layout?.adjustFolds(edited: range, delta: delta) }
         configurePanel()
         configureTextView()
         buildLayout()
@@ -61,6 +65,9 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
         applyTheme()
         NotificationCenter.default.addObserver(forName: .themeDidChange, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.applyTheme() }
+        }
+        NotificationCenter.default.addObserver(forName: .editorSettingsDidChange, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.applyEditorSettings() }
         }
         NotificationCenter.default.addObserver(forName: .notesChangedOnDisk, object: nil, queue: .main) { [weak self] note in
             let ids = note.userInfo?["ids"] as? Set<String> ?? []
@@ -76,6 +83,7 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
                     let sel = textView.selectedRange()
                     let length = (note.text as NSString).length
                     textView.string = note.text
+                    if let ts = textView.textStorage { styler.flush(ts) }
                     textView.undoManager?.removeAllActions()
                     textView.setSelectedRange(NSRange(location: min(sel.location, length), length: 0))
                     header.title = note.title
@@ -202,7 +210,8 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
     /// Keeps a comfortable reading width on wide windows.
     private func updateInsets() {
         let width = scrollView.contentSize.width
-        let side = max(24, ((width - 720) / 2).rounded())
+        let maxWidth = Prefs.lineWidth > 0 ? Prefs.lineWidth : .greatestFiniteMagnitude
+        let side = max(24, ((width - maxWidth) / 2).rounded())
         textView.textContainerInset = NSSize(width: side, height: 6)
         textView.setFrameSize(NSSize(width: width, height: textView.frame.height))
         textView.minSize = NSSize(width: 0, height: scrollView.contentSize.height)
@@ -277,12 +286,15 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
     func open(_ id: String) {
         if let current = currentID, current != id {
             cursorMemory[current] = textView.selectedRange()
+            foldMemory[current] = Set(layout.folds.keys)
             store.discardIfBlank(current)
         }
         guard let note = store.note(id) else { return }
         currentID = id
         Prefs.lastNoteID = id
         textView.string = note.text
+        if let ts = textView.textStorage { styler.flush(ts) }
+        layout.setFolds(foldMemory[id] ?? [])
         textView.undoManager?.removeAllActions()
         textView.typingAttributes = styler.baseAttributes
         let length = (note.text as NSString).length
@@ -310,6 +322,7 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
     // MARK: - NSTextViewDelegate
 
     func textDidChange(_ notification: Notification) {
+        if let ts = textView.textStorage { styler.flush(ts) }
         guard let id = currentID else { return }
         store.update(id, text: textView.string)
         header.title = store.note(id)?.title ?? "Untitled"
@@ -322,6 +335,11 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
             guard let self, let ts = self.textView.textStorage else { return }
             let sel = self.textView.selectedRange()
             guard NSMaxRange(sel) <= ts.length else { return }
+            // Moving into folded text (arrow keys, Find…) unfolds it.
+            if self.layout.unfold(containing: sel.location) || self.layout.unfold(containing: NSMaxRange(sel)) {
+                self.textView.needsDisplay = true
+                self.textView.refreshFoldGutter()
+            }
             self.layout.activate(ts.mutableString.paragraphRange(for: sel))
         }
         if ts.editedMask.isEmpty { apply() } else { DispatchQueue.main.async(execute: apply) }
@@ -348,7 +366,14 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
         footer.stringValue = chars == 0 ? "" : "\(words) \(words == 1 ? "word" : "words")  ·  \(chars) \(chars == 1 ? "character" : "characters")"
     }
 
-    private func flash(_ message: String) {
+    /// Footer message from the updater; empty restores the word count.
+    func showStatus(_ text: String) {
+        if text.isEmpty { flashWork = nil; updateCounts() } else { flash(text, duration: 6) }
+    }
+
+    private func flash(_ message: String) { flash(message, duration: 1.6) }
+
+    private func flash(_ message: String, duration: Double) {
         flashWork?.cancel()
         footer.textColor = Theme.secondary
         footer.stringValue = message
@@ -357,7 +382,7 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
             self?.updateCounts()
         }
         flashWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.6, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + duration, execute: work)
     }
 
     // MARK: - Palette
@@ -454,13 +479,27 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
         present(kind: "notes", placeholder: "Search notes…") { [weak self] query in
             guard let self else { return [] }
             let terms = query.split(separator: " ").map(String.init)
-            let notes = self.store.byModified.filter { note in
+            let matching = self.store.byModified.filter { note in
                 terms.allSatisfy { note.text.range(of: $0, options: [.caseInsensitive, .diacriticInsensitive]) != nil }
             }
-            var items = notes.map { note in
-                PaletteItem(title: note.title, subtitle: note.preview, accessory: Self.ago(note.modified),
-                            symbol: note.id == self.currentID ? "doc.text.fill" : "doc.text") { [weak self] in
-                    self?.open(note.id)
+            // Pinned notes first (in pin order), then everything else by last edit.
+            let pinned = self.store.pinned.compactMap { id in matching.first { $0.id == id } }
+            let rest = matching.filter { !self.store.isPinned($0.id) }
+            var items = (pinned + rest).map { note -> PaletteItem in
+                let isPinned = self.store.isPinned(note.id)
+                let id = note.id
+                return PaletteItem(
+                    title: note.title, subtitle: note.preview, accessory: Self.ago(note.modified),
+                    symbol: isPinned ? "pin.fill" : (id == self.currentID ? "doc.text.fill" : "doc.text"),
+                    extraActions: [
+                        PaletteAction(title: isPinned ? "Unpin" : "Pin", keyLabel: "⇧⌘P", keyCode: UInt16(kVK_ANSI_P),
+                                      modifiers: [.command, .shift]) { [weak self] in self?.store.togglePin(id) },
+                        PaletteAction(title: "Duplicate", keyLabel: "⌘D", keyCode: UInt16(kVK_ANSI_D),
+                                      modifiers: .command) { [weak self] in self?.duplicate(id, open: false) },
+                        PaletteAction(title: "Delete", keyLabel: "⌘⌫", keyCode: UInt16(kVK_Delete),
+                                      modifiers: .command) { [weak self] in self?.confirmDelete(id) },
+                    ]) { [weak self] in
+                    self?.open(id)
                 }
             }
             let q = query.trimmingCharacters(in: .whitespaces)
@@ -494,11 +533,17 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
             }
         }
         let floating = Prefs.floatOnTop
-        return [
+        var top: [PaletteItem] = []
+        if let release = Updater.shared.available {
+            top.append(item("Install Update \(release.version)", "", "arrow.down.circle") { Updater.shared.promptInstall() })
+        }
+        return top + [
             item("New Note", "⌘N", "square.and.pencil") { [weak self] in self?.newNote(nil) },
             item("Browse Notes", "⌘P", "list.bullet") { [weak self] in self?.browseNotes(nil) },
             item("Duplicate Note", "⌘D", "plus.square.on.square") { [weak self] in self?.duplicateNote(nil) },
-            item("Copy Note as Markdown", "⇧⌘C", "doc.on.doc") { [weak self] in self?.copyMarkdown(nil) },
+            item(store.isPinned(currentID ?? "") ? "Unpin Note" : "Pin Note", "⇧⌘P",
+                 store.isPinned(currentID ?? "") ? "pin.slash" : "pin") { [weak self] in self?.togglePinCurrent(nil) },
+            item("Copy Note", "⇧⌘C", "doc.on.doc") { [weak self] in self?.copyMarkdown(nil) },
             item("Export Note…", "⇧⌘E", "square.and.arrow.up") { [weak self] in self?.exportNote(nil) },
             item("Delete Note", "⇧⌘⌫", "trash") { [weak self] in self?.deleteNote(nil) },
             item(floating ? "Stop Floating on Top" : "Float on Top", "⇧⌘F", floating ? "pin.slash" : "pin") { [weak self] in self?.toggleFloat(nil) },
@@ -519,11 +564,17 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
             format("Checklist", "⇧⌘9", "checklist", #selector(NoteTextView.formatChecklist(_:))),
             format("Toggle Checkbox", "⌘↩", "checkmark.square", #selector(NoteTextView.toggleTask(_:))),
             format("Blockquote", "⇧⌘B", "text.quote", #selector(NoteTextView.formatQuote(_:))),
+            format("Toggle Fold", "⌥⌘F", "chevron.down.circle", #selector(NoteTextView.toggleFoldAtCaret(_:))),
+            format("Unfold All", "⇧⌥⌘F", "chevron.up.chevron.down", #selector(NoteTextView.unfoldAllSections(_:))),
+            format("Move Line Up", "⌥⌘↑", "arrow.up", #selector(NoteTextView.moveLineUp(_:))),
+            format("Move Line Down", "⌥⌘↓", "arrow.down", #selector(NoteTextView.moveLineDown(_:))),
+            format("Duplicate Line", "⇧⌘D", "plus.square.on.square", #selector(NoteTextView.duplicateLine(_:))),
             item("Change Theme…", "⌥⌘T", "paintpalette") { [weak self] in self?.chooseTheme(nil) },
             item("Bigger Text", "⌘+", "plus.magnifyingglass") { [weak self] in self?.zoomIn(nil) },
             item("Smaller Text", "⌘−", "minus.magnifyingglass") { [weak self] in self?.zoomOut(nil) },
             item("Show Notes Folder", "", "folder") { [weak self] in self?.revealFolder(nil) },
             item("Settings…", "⌘,", "gearshape") { [weak self] in self?.openSettings?() },
+            item("Check for Updates…", "", "arrow.triangle.2.circlepath") { Updater.shared.check(userInitiated: true) },
             item("Quit Mini Notes", "⌘Q", "power") { NSApp.terminate(nil) },
         ]
     }
@@ -540,15 +591,12 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
     }
 
     @objc func duplicateNote(_ sender: Any?) {
-        guard let id = currentID, let note = store.note(id), !note.isBlank else { return }
-        createNote(text: note.text)
-        flash("Duplicated")
+        guard let id = currentID else { return }
+        duplicate(id, open: true)
     }
 
     @objc func copyMarkdown(_ sender: Any?) {
-        let pb = NSPasteboard.general
-        pb.clearContents()
-        pb.setString(textView.string, forType: .string)
+        RichText.copy(markdown: textView.string)
         flash("Copied to clipboard")
     }
 
@@ -564,7 +612,25 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
     }
 
     @objc func deleteNote(_ sender: Any?) {
-        guard let id = currentID, let note = store.note(id) else { return }
+        guard let id = currentID else { return }
+        confirmDelete(id)
+    }
+
+    @objc func togglePinCurrent(_ sender: Any?) {
+        guard let id = currentID, store.note(id)?.isBlank == false else { return }
+        store.togglePin(id)
+        flash(store.isPinned(id) ? "Pinned" : "Unpinned")
+    }
+
+    private func duplicate(_ id: String, open: Bool) {
+        guard let note = store.note(id), !note.isBlank else { return }
+        let copy = store.create(text: note.text)
+        if open { self.open(copy.id); show() }
+        flash("Duplicated")
+    }
+
+    private func confirmDelete(_ id: String) {
+        guard let note = store.note(id) else { return }
         if note.isBlank {
             performDelete(id)
             return
@@ -576,14 +642,21 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
         delete.hasDestructiveAction = true
         alert.addButton(withTitle: "Cancel")
         alert.beginSheetModal(for: panel) { [weak self] response in
-            guard response == .alertFirstButtonReturn else { return }
-            MainActor.assumeIsolated { self?.performDelete(id) }
+            MainActor.assumeIsolated {
+                if response == .alertFirstButtonReturn { self?.performDelete(id) }
+                if let p = self?.palette { p.refresh() }
+            }
         }
     }
 
     private func performDelete(_ id: String) {
-        currentID = nil
         cursorMemory[id] = nil
+        guard id == currentID else {
+            store.delete(id)
+            flash("Moved to Trash")
+            return
+        }
+        currentID = nil
         store.delete(id)
         if let next = store.byModified.first {
             open(next.id)
@@ -621,16 +694,24 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
 
     private func setFontSize(_ size: CGFloat) {
         let size = min(28, max(11, size))
-        guard let ts = textView.textStorage else { return }
         Prefs.fontSize = size
         styler.baseSize = size
+        applyEditorSettings()
+        flash("Text size \(Int(size))")
+    }
+
+    /// Re-applies font family, line spacing and line width (from Settings).
+    func applyEditorSettings() {
+        guard let ts = textView.textStorage else { return }
+        styler.reloadFonts()
         layout.bodyFont = styler.body
         ts.beginEditing()
         styler.styleAll(ts)
         ts.endEditing()
         textView.typingAttributes = styler.baseAttributes
         textView.defaultParagraphStyle = styler.bodyPara
-        flash("Text size \(Int(size))")
+        textView.needsDisplay = true
+        updateInsets()
     }
 
     @objc func revealFolder(_ sender: Any?) {
@@ -638,6 +719,9 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
     }
 
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        if item.action == #selector(togglePinCurrent(_:)) {
+            item.title = store.isPinned(currentID ?? "") ? "Unpin Note" : "Pin Note"
+        }
         if item.action == #selector(toggleFloat(_:)) { item.state = Prefs.floatOnTop ? .on : .off }
         return true
     }

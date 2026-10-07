@@ -1,5 +1,14 @@
 import AppKit
 
+/// A secondary action on a row, triggered by a key combo while the row is selected (e.g. ⌘D).
+struct PaletteAction {
+    var title: String
+    var keyLabel: String
+    var keyCode: UInt16
+    var modifiers: NSEvent.ModifierFlags
+    var run: () -> Void
+}
+
 struct PaletteItem {
     var title: String
     var subtitle: String = ""
@@ -11,6 +20,8 @@ struct PaletteItem {
     var isCurrent: Bool = false
     /// Runs when the row becomes selected (live preview).
     var preview: (() -> Void)? = nil
+    var extraActions: [PaletteAction] = []
+    var primaryTitle = "Open"
     var action: () -> Void
 }
 
@@ -27,6 +38,9 @@ final class PaletteView: NSView, NSTableViewDataSource, NSTableViewDelegate, NST
     private let table = NSTableView()
     private let scroll = NSScrollView()
     private let emptyLabel = NSTextField(labelWithString: "No results")
+    private let hintLabel = NSTextField(labelWithString: "")
+    private let hintSeparator = Hairline()
+    private var hintHeight: NSLayoutConstraint!
     private let provider: (String) -> [PaletteItem]
     private var items: [PaletteItem] = []
 
@@ -85,7 +99,12 @@ final class PaletteView: NSView, NSTableViewDataSource, NSTableViewDelegate, NST
         self.placeholder = placeholder
 
         addSubview(card)
-        for v in [search, field, separator, scroll, emptyLabel] as [NSView] {
+        hintLabel.font = .systemFont(ofSize: 11.5)
+        hintLabel.lineBreakMode = .byTruncatingTail
+        hintLabel.alignment = .right
+        hintLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        hintHeight = hintSeparator.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: 0)
+        for v in [search, field, separator, scroll, emptyLabel, hintSeparator, hintLabel] as [NSView] {
             v.translatesAutoresizingMaskIntoConstraints = false
             card.addSubview(v)
         }
@@ -109,7 +128,13 @@ final class PaletteView: NSView, NSTableViewDataSource, NSTableViewDelegate, NST
             scroll.topAnchor.constraint(equalTo: separator.bottomAnchor),
             scroll.leadingAnchor.constraint(equalTo: card.leadingAnchor),
             scroll.trailingAnchor.constraint(equalTo: card.trailingAnchor),
-            scroll.bottomAnchor.constraint(equalTo: card.bottomAnchor),
+            scroll.bottomAnchor.constraint(equalTo: hintSeparator.topAnchor),
+            hintSeparator.leadingAnchor.constraint(equalTo: card.leadingAnchor),
+            hintSeparator.trailingAnchor.constraint(equalTo: card.trailingAnchor),
+            hintHeight,
+            hintLabel.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 16),
+            hintLabel.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -16),
+            hintLabel.centerYAnchor.constraint(equalTo: card.bottomAnchor, constant: -15),
 
             emptyLabel.centerXAnchor.constraint(equalTo: card.centerXAnchor),
             emptyLabel.topAnchor.constraint(equalTo: separator.bottomAnchor, constant: 24),
@@ -128,6 +153,8 @@ final class PaletteView: NSView, NSTableViewDataSource, NSTableViewDelegate, NST
         defer { suppressPreview = false }
         layer?.backgroundColor = NSColor.black.withAlphaComponent(0.06).cgColor
         emptyLabel.textColor = Theme.tertiary
+        hintLabel.textColor = Theme.tertiary
+        hintSeparator.needsDisplay = true
         searchIcon.contentTintColor = Theme.tertiary
         field.textColor = Theme.text
         field.placeholderAttributedString = NSAttributedString(string: placeholder, attributes: [
@@ -148,11 +175,57 @@ final class PaletteView: NSView, NSTableViewDataSource, NSTableViewDelegate, NST
             table.selectRowIndexes([row], byExtendingSelection: false)
             table.scrollRowToVisible(row)
         }
+        updateHint()
     }
 
     private func cancel() {
         onCancel?()
         onClose?()
+    }
+
+    /// Row actions like ⌘D / ⌘⌫ / ⇧⌘P act on the selected row before the menu bar sees them.
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        let flags = event.modifierFlags.intersection([.command, .shift, .option, .control])
+        let row = table.selectedRow
+        if items.indices.contains(row),
+           let action = items[row].extraActions.first(where: { $0.keyCode == event.keyCode && $0.modifiers == flags }) {
+            action.run()
+            refresh()
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
+    }
+
+    /// Re-queries the list, keeping the selection position.
+    func refresh() {
+        let row = table.selectedRow
+        items = provider(field.stringValue)
+        table.reloadData()
+        emptyLabel.isHidden = !items.isEmpty
+        if !items.isEmpty {
+            let r = max(0, min(row, items.count - 1))
+            suppressPreview = true
+            table.selectRowIndexes([r], byExtendingSelection: false)
+            suppressPreview = false
+            table.scrollRowToVisible(r)
+        }
+        updateHint()
+        window?.makeFirstResponder(field)
+    }
+
+    private func updateHint() {
+        let row = table.selectedRow
+        guard items.indices.contains(row), !items[row].extraActions.isEmpty else {
+            hintLabel.stringValue = ""
+            hintSeparator.isHidden = true
+            hintHeight.constant = 0
+            return
+        }
+        let item = items[row]
+        let parts = ["↩ \(item.primaryTitle)"] + item.extraActions.map { "\($0.keyLabel) \($0.title)" }
+        hintLabel.stringValue = parts.joined(separator: "    ")
+        hintSeparator.isHidden = false
+        hintHeight.constant = -30
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -196,6 +269,7 @@ final class PaletteView: NSView, NSTableViewDataSource, NSTableViewDelegate, NST
     func tableViewSelectionDidChange(_ notification: Notification) {
         let row = table.selectedRow
         if !suppressPreview, items.indices.contains(row) { items[row].preview?() }
+        updateHint()
     }
 
     func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? { PaletteRowView() }

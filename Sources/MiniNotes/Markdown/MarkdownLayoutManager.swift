@@ -94,7 +94,125 @@ final class MarkdownLayoutManager: NSLayoutManager, NSLayoutManagerDelegate {
     }
 
     private func isHidden(_ attrs: [NSAttributedString.Key: Any], _ ci: Int) -> Bool {
-        attrs[.mdHidden] != nil || (attrs[.mdSyntax] != nil && !isActive(ci))
+        isFolded(ci) || attrs[.mdHidden] != nil || (attrs[.mdSyntax] != nil && !isActive(ci))
+    }
+
+    // MARK: - Folding
+
+    /// Line-start indexes of folded headings → the character range each one hides.
+    private(set) var folds: [Int: NSRange] = [:]
+
+    func isFolded(_ ci: Int) -> Bool {
+        for r in folds.values where ci >= r.location && ci < NSMaxRange(r) { return true }
+        return false
+    }
+
+    /// Heading level (1–6) of the line starting at `lineStart`, ignoring code blocks.
+    func headingLevel(at lineStart: Int) -> Int? {
+        guard let ts = textStorage, lineStart < ts.length else { return nil }
+        if ts.attribute(.mdCodeBlock, at: lineStart, effectiveRange: nil) != nil { return nil }
+        let ns = ts.mutableString
+        var i = lineStart, level = 0
+        while i < ns.length, ns.character(at: i) == 0x23, level < 7 { level += 1; i += 1 }
+        guard (1...6).contains(level), i < ns.length, ns.character(at: i) == 0x20 || ns.character(at: i) == 0x09 else { return nil }
+        return level
+    }
+
+    /// What folding the heading at `lineStart` would hide: its line break and everything up to the
+    /// line break before the next heading of the same or higher level.
+    func foldRange(forHeadingAt lineStart: Int) -> NSRange? {
+        guard let ts = textStorage, let level = headingLevel(at: lineStart) else { return nil }
+        let ns = ts.mutableString
+        var s = 0, e = 0, ce = 0
+        ns.getLineStart(&s, end: &e, contentsEnd: &ce, for: NSRange(location: lineStart, length: 0))
+        let hideFrom = ce
+        var loc = e
+        var end = ns.length
+        while loc < ns.length {
+            var ls = 0, le = 0, lce = 0
+            ns.getLineStart(&ls, end: &le, contentsEnd: &lce, for: NSRange(location: loc, length: 0))
+            if let l = headingLevel(at: ls), l <= level { end = ls - 1; break }   // keep the break before it
+            if le <= loc { break }
+            loc = le
+        }
+        guard end > hideFrom else { return nil }
+        // Don't fold a section that's only blank lines.
+        let hidden = NSRange(location: hideFrom, length: end - hideFrom)
+        guard ns.substring(with: hidden).contains(where: { !$0.isWhitespace }) else { return nil }
+        return hidden
+    }
+
+    func isFoldable(_ lineStart: Int) -> Bool { foldRange(forHeadingAt: lineStart) != nil }
+
+    /// Folds or unfolds the heading at `lineStart`. Returns false if there's nothing to fold.
+    @discardableResult
+    func toggleFold(at lineStart: Int) -> Bool {
+        if let r = folds.removeValue(forKey: lineStart) {
+            invalidateFold(lineStart, r)
+            return true
+        }
+        guard let r = foldRange(forHeadingAt: lineStart) else { return false }
+        folds[lineStart] = r
+        invalidateFold(lineStart, r)
+        return true
+    }
+
+    func unfoldAll() {
+        let old = folds
+        folds = [:]
+        for (start, r) in old { invalidateFold(start, r) }
+    }
+
+    func setFolds(_ starts: Set<Int>) {
+        unfoldAll()
+        for s in starts.sorted() { if let r = foldRange(forHeadingAt: s) { folds[s] = r; invalidateFold(s, r) } }
+    }
+
+    /// Unfolds any section whose hidden text contains `ci` (e.g. the caret moved there).
+    @discardableResult
+    func unfold(containing ci: Int) -> Bool {
+        var changed = false
+        for (start, r) in folds where ci > r.location && ci <= NSMaxRange(r) {
+            folds[start] = nil
+            invalidateFold(start, r)
+            changed = true
+        }
+        return changed
+    }
+
+    /// Keeps folds pointing at the right headings after a text edit (call with the post-edit range).
+    func adjustFolds(edited: NSRange, delta: Int) {
+        guard !folds.isEmpty else { return }
+        let before = NSRange(location: edited.location, length: max(0, edited.length - delta))
+        var kept = Set<Int>()
+        for (start, r) in folds {
+            let span = NSRange(location: start, length: NSMaxRange(r) - start)
+            if before.location < start, NSMaxRange(before) <= start {
+                kept.insert(start + delta)          // edit entirely before the heading
+            } else if before.location >= NSMaxRange(span) {
+                kept.insert(start)                  // edit after the folded section
+            }                                       // edit touching the section: unfold
+        }
+        folds = [:]
+        for s in kept { if let r = foldRange(forHeadingAt: s) { folds[s] = r } }
+    }
+
+    private func invalidateFold(_ start: Int, _ r: NSRange) {
+        guard let ts = textStorage else { return }
+        let span = NSRange(location: start, length: min(NSMaxRange(r), ts.length) - start)
+        invalidateGlyphs(forCharacterRange: span, changeInLength: 0, actualCharacterRange: nil)
+        invalidateLayout(forCharacterRange: span, actualCharacterRange: nil)
+        invalidateDisplay(forCharacterRange: NSRange(location: start, length: ts.length - start))
+    }
+
+    /// Frame (container coordinates) of the "⋯" pill drawn after a folded heading.
+    func foldPillRect(forHeadingAt start: Int) -> NSRect? {
+        guard let r = folds[start], let tc = textContainers.first, r.location > start else { return nil }
+        let g = glyphRange(forCharacterRange: NSRange(location: start, length: r.location - start), actualCharacterRange: nil)
+        guard g.length > 0 else { return nil }
+        let text = boundingRect(forGlyphRange: g, in: tc)
+        let frag = lineFragmentUsedRect(forGlyphAt: g.location, effectiveRange: nil)
+        return NSRect(x: text.maxX + 8, y: frag.minY + (frag.height - 16) / 2 - 1, width: 26, height: 16)
     }
 
     func layoutManager(_ lm: NSLayoutManager, shouldUse action: NSLayoutManager.ControlCharacterAction,
@@ -115,7 +233,7 @@ final class MarkdownLayoutManager: NSLayoutManager, NSLayoutManagerDelegate {
         // Fenced code blocks: one rounded panel per block.
         var drawn = Set<Int>()
         ts.enumerateAttribute(.mdCodeBlock, in: chars, options: []) { value, r, _ in
-            guard let id = value as? Int, !drawn.contains(id) else { return }
+            guard let id = value as? Int, !drawn.contains(id), !isFolded(r.location) else { return }
             drawn.insert(id)
             var full = NSRange()
             _ = ts.attribute(.mdCodeBlock, at: r.location, longestEffectiveRange: &full, in: all)
@@ -136,7 +254,7 @@ final class MarkdownLayoutManager: NSLayoutManager, NSLayoutManagerDelegate {
 
         // Blockquote bars.
         ts.enumerateAttribute(.mdQuote, in: chars, options: []) { value, r, _ in
-            guard value != nil else { return }
+            guard value != nil, !isFolded(r.location) else { return }
             let g = glyphRange(forCharacterRange: r, actualCharacterRange: nil)
             enumerateLineFragments(forGlyphRange: g) { frag, _, _, fragGlyphs, _ in
                 guard self.fragment(fragGlyphs, startsWith: .mdQuote, in: ts) else { return }
@@ -147,7 +265,7 @@ final class MarkdownLayoutManager: NSLayoutManager, NSLayoutManagerDelegate {
 
         // Horizontal rules (only when not being edited).
         ts.enumerateAttribute(.mdRule, in: chars, options: []) { value, r, _ in
-            guard value != nil, !isActive(r.location) else { return }
+            guard value != nil, !isActive(r.location), !isFolded(r.location) else { return }
             let g = glyphRange(forCharacterRange: r, actualCharacterRange: nil)
             guard g.length > 0 else { return }
             let used = lineFragmentUsedRect(forGlyphAt: g.location, effectiveRange: nil)
@@ -162,8 +280,18 @@ final class MarkdownLayoutManager: NSLayoutManager, NSLayoutManagerDelegate {
         guard let ts = textStorage, ts.length > 0 else { return }
         let chars = characterRange(forGlyphRange: glyphsToShow, actualGlyphRange: nil)
         ts.enumerateAttribute(.mdCheckbox, in: chars, options: []) { value, r, _ in
-            guard let checked = value as? Bool, let rect = checkboxRect(for: r) else { return }
+            guard let checked = value as? Bool, !isFolded(r.location), let rect = checkboxRect(for: r) else { return }
             drawCheckbox(rect.offsetBy(dx: origin.x, dy: origin.y), checked: checked)
+        }
+        for start in folds.keys where NSLocationInRange(start, chars) || start == chars.location {
+            guard let pill = foldPillRect(forHeadingAt: start)?.offsetBy(dx: origin.x, dy: origin.y) else { continue }
+            Theme.inlineCodeBackground.setFill()
+            NSBezierPath(roundedRect: pill, xRadius: 5, yRadius: 5).fill()
+            Theme.secondary.setFill()
+            for i in 0..<3 {
+                let d: CGFloat = 3
+                NSBezierPath(ovalIn: NSRect(x: pill.midX - 7 + CGFloat(i) * 6 - d / 2 + 1, y: pill.midY - d / 2, width: d, height: d)).fill()
+            }
         }
     }
 
@@ -171,7 +299,7 @@ final class MarkdownLayoutManager: NSLayoutManager, NSLayoutManagerDelegate {
     private func drawPills(_ key: NSAttributedString.Key, _ color: NSColor, in chars: NSRange,
                            ts: NSTextStorage, tc: NSTextContainer, origin: NSPoint) {
         ts.enumerateAttribute(key, in: chars, options: []) { value, r, _ in
-            guard value != nil else { return }
+            guard value != nil, !isFolded(r.location) else { return }
             let font = (ts.attribute(.font, at: r.location, effectiveRange: nil) as? NSFont) ?? bodyFont
             let g = glyphRange(forCharacterRange: r, actualCharacterRange: nil)
             enumerateLineFragments(forGlyphRange: g) { frag, _, _, fragGlyphs, _ in

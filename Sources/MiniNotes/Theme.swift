@@ -104,6 +104,28 @@ enum Themes {
         ThemeFamily(id: "rose-pine-auto", name: "Rosé Pine", light: "rose-pine-dawn", dark: "rose-pine"),
     ]
 
+    /// Code token colors per theme: keyword, string, number, comment, type, function.
+    static let tokenColors: [String: [UInt32]] = [
+        "vscode-dark":      [0x569CD6, 0xCE9178, 0xB5CEA8, 0x6A9955, 0x4EC9B0, 0xDCDCAA],
+        "vscode-light":     [0x0000FF, 0xA31515, 0x098658, 0x008000, 0x267F99, 0x795E26],
+        "github-dark":      [0xFF7B72, 0xA5D6FF, 0x79C0FF, 0x8B949E, 0xFFA657, 0xD2A8FF],
+        "github-light":     [0xCF222E, 0x0A3069, 0x0550AE, 0x6E7781, 0x953800, 0x8250DF],
+        "one-dark":         [0xC678DD, 0x98C379, 0xD19A66, 0x7F848E, 0xE5C07B, 0x61AFEF],
+        "one-light":        [0xA626A4, 0x50A14F, 0x986801, 0xA0A1A7, 0xC18401, 0x4078F2],
+        "dracula":          [0xFF79C6, 0xF1FA8C, 0xBD93F9, 0x6272A4, 0x8BE9FD, 0x50FA7B],
+        "monokai":          [0xF92672, 0xE6DB74, 0xAE81FF, 0x75715E, 0x66D9EF, 0xA6E22E],
+        "nord":             [0x81A1C1, 0xA3BE8C, 0xB48EAD, 0x616E88, 0x8FBCBB, 0x88C0D0],
+        "tokyo-night":      [0xBB9AF7, 0x9ECE6A, 0xFF9E64, 0x565F89, 0x2AC3DE, 0x7AA2F7],
+        "catppuccin-mocha": [0xCBA6F7, 0xA6E3A1, 0xFAB387, 0x9399B2, 0xF9E2AF, 0x89B4FA],
+        "catppuccin-latte": [0x8839EF, 0x40A02B, 0xFE640B, 0x7C7F93, 0xDF8E1D, 0x1E66F5],
+        "gruvbox-dark":     [0xFB4934, 0xB8BB26, 0xD3869B, 0x928374, 0xFABD2F, 0x8EC07C],
+        "gruvbox-light":    [0x9D0006, 0x79740E, 0x8F3F71, 0x928374, 0xB57614, 0x427B58],
+        "solarized-dark":   [0x859900, 0x2AA198, 0xD33682, 0x586E75, 0xB58900, 0x268BD2],
+        "solarized-light":  [0x859900, 0x2AA198, 0xD33682, 0x93A1A1, 0xB58900, 0x268BD2],
+        "rose-pine":        [0x31748F, 0xF6C177, 0xEB6F92, 0x6E6A86, 0x9CCFD8, 0xEBBCBA],
+        "rose-pine-dawn":   [0x286983, 0xEA9D34, 0xB4637A, 0x9893A5, 0x56949F, 0xD7827E],
+    ]
+
     static func spec(_ id: String) -> ThemeSpec? { all.first { $0.id == id } }
     static func family(_ id: String) -> ThemeFamily? { families.first { $0.id == id } }
 
@@ -154,6 +176,7 @@ enum Themes {
 
 extension Notification.Name {
     static let themeDidChange = Notification.Name("MiniNotes.themeDidChange")
+    static let editorSettingsDidChange = Notification.Name("MiniNotes.editorSettingsDidChange")
 }
 
 /// Owns the selected theme and re-resolves "auto" themes when macOS switches light/dark.
@@ -239,6 +262,18 @@ enum Theme {
         spec.map { c($0.faint, 0.45) } ?? dynamic(light: NSColor(white: 0, alpha: 0.12), dark: NSColor(white: 1, alpha: 0.14))
     }
     static var highlight: NSColor { spec.map { c($0.highlight, 0.3) } ?? NSColor.systemYellow.withAlphaComponent(0.3) }
+    /// Xcode's default colors for the System theme.
+    private static let systemTokens: [(UInt32, UInt32)] = [   // (light, dark)
+        (0x9B2393, 0xFF7AB2), (0xC41A16, 0xFF8170), (0x1C00CF, 0xD9C97C),
+        (0x5D6C79, 0x7F8C98), (0x0F68A0, 0x5DD8FF), (0x326D74, 0x67B7A4),
+    ]
+
+    static func token(_ kind: TokenKind) -> NSColor {
+        if let spec, let colors = Themes.tokenColors[spec.id] { return c(colors[kind.rawValue]) }
+        let pair = systemTokens[kind.rawValue]
+        return dynamic(light: c(pair.0), dark: c(pair.1))
+    }
+
     static var paletteBackground: NSColor {
         spec.map { c($0.surface) } ?? dynamic(light: NSColor(white: 0.985, alpha: 1),
                                              dark: NSColor(srgbRed: 0.16, green: 0.16, blue: 0.17, alpha: 1))

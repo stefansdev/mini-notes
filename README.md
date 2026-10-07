@@ -13,16 +13,29 @@ Written in Swift with AppKit + TextKit — no Electron, no web view. ~600 KB, la
 
 - **Global hotkey** (default <kbd>⌥</kbd><kbd>⌘</kbd><kbd>N</kbd>) toggles the window from anywhere; <kbd>Esc</kbd> hides it and returns you to the app you were in
 - **Live markdown** — headings, **bold**, _italic_, ~~strikethrough~~, ==highlight==, `inline code`, fenced code blocks, links, quotes, rules, nested bullets, numbered lists and clickable checkboxes. Syntax hides itself except on the line you're editing
-- **Smart editing** — lists continue on <kbd>Enter</kbd>, <kbd>Tab</kbd> / <kbd>⇧Tab</kbd> nest them, `[] ` becomes a checkbox, <kbd>Backspace</kbd> after a marker removes it
-- **Quick switcher** (<kbd>⌘P</kbd>) with full-text search, and an **actions palette** (<kbd>⌘K</kbd>)
+- **Code blocks with syntax highlighting** for ~20 languages (Swift, TS/JS, Python, Go, Rust, SQL, shell, JSON, YAML, HTML, CSS…), colored by the active theme
+- **Smart editing** — lists continue on <kbd>Enter</kbd>, <kbd>Tab</kbd> / <kbd>⇧Tab</kbd> nest them, `[] ` becomes a checkbox, brackets/quotes/`**` auto-close, move or duplicate lines, paste a URL over selected text to make a link
+- **Collapsible headings** — hover a heading and click the chevron (or <kbd>⌥⌘F</kbd>) to fold its section
+- **Copy as rich text** — copies paste formatted into Slack, Mail, Notion and Google Docs, and as markdown into code editors
+- **Quick switcher** (<kbd>⌘P</kbd>) with full-text search and pinned notes — pin, duplicate or delete right from the list — plus an **actions palette** (<kbd>⌘K</kbd>)
 - **Themes** — 18 popular editor themes (GitHub, VS Code, One Dark, Dracula, Catppuccin, Tokyo Night, Nord, Gruvbox, Solarized, Rosé Pine…) with live preview, plus auto light/dark pairs
 - **iCloud sync** — one checkbox moves your notes to iCloud Drive; edits from your other Macs show up live
 - **Plain files** — every note is a `.md` file you own; deleted notes go to the Trash
+- **Your font** — System, Rounded, Serif, Monospaced or any installed font; adjustable line width and spacing
+- **Auto-updates** from GitHub Releases, or install and update with Homebrew
 - Float on top, light/dark mode, menu bar icon, open at login, adjustable text size
+
+<p align="center"><img src="docs/code.png" width="60%" alt="Syntax-highlighted code blocks in GitHub Dark"></p>
 
 ## Install
 
 Requires **macOS 14 Sonoma or later** (Apple Silicon or Intel).
+
+### Homebrew
+
+```bash
+brew install --cask stefansdev/tap/mini-notes
+```
 
 ### Download
 
@@ -67,7 +80,9 @@ Mini Notes lives in the menu bar (no Dock icon). Press the hotkey to show or hid
 | Copy as markdown | <kbd>⇧⌘C</kbd> | Toggle checkbox | <kbd>⌘↩</kbd> or click it |
 | Export | <kbd>⇧⌘E</kbd> | Blockquote | <kbd>⇧⌘B</kbd> |
 | Delete (to Trash) | <kbd>⇧⌘⌫</kbd> | Indent / outdent list | <kbd>Tab</kbd> / <kbd>⇧Tab</kbd> |
-| Change theme | <kbd>⌥⌘T</kbd> | | |
+| Change theme | <kbd>⌥⌘T</kbd> | Move line up / down | <kbd>⌥⌘↑</kbd> / <kbd>⌥⌘↓</kbd> |
+| Pin note | <kbd>⇧⌘P</kbd> | Duplicate line | <kbd>⇧⌘D</kbd> |
+| Fold / unfold section | <kbd>⌥⌘F</kbd> | Unfold all | <kbd>⇧⌥⌘F</kbd> |
 | Float on top | <kbd>⇧⌘F</kbd> | Text size | <kbd>⌘+</kbd> / <kbd>⌘−</kbd> / <kbd>⌘0</kbd> |
 | Find | <kbd>⌘F</kbd> | Open link | <kbd>⌘</kbd>-click |
 
@@ -85,6 +100,8 @@ Press <kbd>⌥⌘T</kbd> (or <kbd>⌘K</kbd> → *Change Theme…*) and arrow th
 | **Light** | VS Code Light Modern, GitHub Light, One Light, Catppuccin Latte, Gruvbox Light, Solarized Light, Rosé Pine Dawn |
 
 "Auto" themes switch between their light and dark variant with macOS. Themes live in [`Theme.swift`](Sources/MiniNotes/Theme.swift) as ten colors each — adding one is a single `ThemeSpec` entry.
+
+In the <kbd>⌘P</kbd> list: <kbd>↩</kbd> open, <kbd>⇧⌘P</kbd> pin/unpin, <kbd>⌘D</kbd> duplicate, <kbd>⌘⌫</kbd> delete.
 
 ## Storage & sync
 
@@ -120,7 +137,15 @@ MININOTES_SNAPSHOT=/dev/null MININOTES_ACTION=themetest .build/debug/MiniNotes  
 MININOTES_SNAPSHOT=/tmp/shot.png MININOTES_APPEARANCE=dark .build/debug/MiniNotes  # render window to PNG
 ```
 
-`./build.sh dist` produces the universal `build/MiniNotes.zip` attached to releases.
+`./build.sh dist` produces the universal `build/MiniNotes.zip` attached to releases. To cut a release (tests, version bump, GitHub release and Homebrew cask bump in [stefansdev/homebrew-tap](https://github.com/stefansdev/homebrew-tap)):
+
+```bash
+scripts/release.sh 1.2.0 release-notes.md
+```
+
+## Updates
+
+Mini Notes checks GitHub Releases once a day (turn it off in Settings, or use **Check for Updates…** in the menu bar menu). Updates are downloaded over HTTPS, checked (bundle identifier, version and code signature) and installed in place, then the app relaunches.
 
 ## License
 

@@ -16,12 +16,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         setupStatusItem()
 
         HotKey.shared.handler = { [weak self] in self?.controller.toggle() }
-        hotKeyOK = registerHotKey()
+        #if DEBUG
+        let skipHotKey = ProcessInfo.processInfo.environment["MININOTES_NO_HOTKEY"] != nil
+        #else
+        let skipHotKey = false
+        #endif
+        hotKeyOK = skipHotKey || registerHotKey()
 
         NotificationCenter.default.addObserver(forName: NSApplication.didResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
                 if Prefs.hideOnDeactivate { self?.controller.hide(hideApp: false) }
             }
+        }
+
+        Updater.shared.onStatus = { [weak self] text in self?.controller.showStatus(text) }
+        Updater.shared.start()
+        NotificationCenter.default.addObserver(forName: .updateAvailable, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.updateAvailableChanged() }
         }
 
         if !CommandLine.arguments.contains("--background") { controller.show() }
@@ -48,12 +59,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if env["MININOTES_ACTION"] == "selftest" { runSelfTest(); NSApp.terminate(nil); return }
         if env["MININOTES_ACTION"] == "undotest" { runUndoTest(); return }
+        if env["MININOTES_ACTION"] == "updatetest" {
+            setvbuf(stdout, nil, _IONBF, 0)
+            Task {
+                do {
+                    let r = try await Updater.shared.fetchLatest()
+                    print("installed:", Updater.shared.currentVersion, "latest:", r.version,
+                          "newer:", Updater.isNewer(r.version, than: Updater.shared.currentVersion))
+                    try await Updater.shared.performInstall(r)
+                    let v = Bundle(url: Bundle.main.bundleURL)?.infoDictionary?["CFBundleShortVersionString"] as? String
+                    let onDisk = NSDictionary(contentsOf: Bundle.main.bundleURL.appendingPathComponent("Contents/Info.plist"))?["CFBundleShortVersionString"]
+                    print("UPDATE OK, bundle on disk is now", onDisk ?? v ?? "?")
+                } catch {
+                    print("UPDATE FAILED:", error.localizedDescription)
+                }
+                NSApp.terminate(nil)
+            }
+            return
+        }
         if env["MININOTES_ACTION"] == "themetest" { runThemeTest(); NSApp.terminate(nil); return }
         if let dest = env["MININOTES_SYNCTEST"] { runSyncTest(URL(fileURLWithPath: dest)); return }
         switch env["MININOTES_ACTION"] ?? "" {
         case "notes": controller.browseNotes(nil)
         case "settings": openSettings(nil)
         case "theme": controller.chooseTheme(nil)
+        case let a where a.hasPrefix("fold:"):
+            // e.g. MININOTES_ACTION="fold:## Todo" folds that heading
+            let ns = controller.textView.string as NSString
+            let r = ns.range(of: String(a.dropFirst(5)))
+            if r.location != NSNotFound, let lm = controller.textView.layoutManager as? MarkdownLayoutManager {
+                print("fold", a, "at", r.location, "→", lm.toggleFold(at: r.location), lm.folds)
+                controller.textView.setSelectedRange(NSRange(location: 0, length: 0))
+            }
         case "actions": controller.showActions(nil)
         case let a where a.hasPrefix("caret:"):
             controller.textView.setSelectedRange(NSRange(location: Int(a.dropFirst(6)) ?? 0, length: 0)); controller.textView.scrollRangeToVisible(controller.textView.selectedRange())
@@ -214,6 +251,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         func check(_ name: String, _ start: String, caret: Int? = nil, sel: NSRange? = nil,
                    _ action: (NoteTextView) -> Void, expect: String) {
             tv.string = start
+            tv.didChangeText()   // style now, like the app does when it loads text
             tv.setSelectedRange(sel ?? NSRange(location: caret ?? (start as NSString).length, length: 0))
             action(tv)
             let ok = tv.string == expect
@@ -244,7 +282,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         check("toggle task checks", "- [ ] a", { $0.toggleTask(nil) }, expect: "- [x] a")
         check("toggle task unchecks", "- [x] a", { $0.toggleTask(nil) }, expect: "- [ ] a")
         func type(_ s: String) -> (NoteTextView) -> Void {
-            { tv in s.forEach { tv.insertText(String($0), replacementRange: tv.selectedRange()) } }
+            { tv in s.forEach { tv.insertText(String($0), replacementRange: NSRange(location: NSNotFound, length: 0)) } }
         }
         check("typing [] makes task", "", type("[] buy milk"), expect: "- [ ] buy milk")
         check("typing [ ] makes task", "", type("[ ] x"), expect: "- [ ] x")
@@ -253,6 +291,123 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         check("- [] completes task", "", type("- [] y"), expect: "- [ ] y")
         check("[] mid-line untouched", "", type("see [] here"), expect: "see [] here")
         check("task then Enter continues", "", { tv in type("[] a")(tv); tv.insertNewline(nil) }, expect: "- [ ] a\n- [ ] ")
+        // Caret + styling (regression: caret used to jump to the end of the line when typing mid-line)
+        check("typing mid-line keeps caret", "hello world", caret: 5, { tv in type("XY")(tv) }, expect: "helloXY world")
+        check("…caret is after typed text", "hello world", caret: 5, { tv in type("XY")(tv); if tv.selectedRange().location != 7 { tv.string = "caret at \(tv.selectedRange().location)" } }, expect: "helloXY world")
+        check("typed heading gets styled", "", { tv in
+            type("# Hi")(tv)
+            let size = (tv.textStorage!.attribute(.font, at: 2, effectiveRange: nil) as? NSFont)?.pointSize ?? 0
+            if size <= Prefs.fontSize { tv.string = "not styled (\(size))" }
+        }, expect: "# Hi")
+
+        // Auto-pairs
+        check("( pairs", "", type("("), expect: "()")
+        check("typing ) steps over", "", type("(a)"), expect: "(a)")
+        check("backspace deletes empty pair", "", { tv in type("(")(tv); tv.deleteBackward(nil) }, expect: "")
+        check("selection wraps with *", "hi", sel: NSRange(location: 0, length: 2), type("*"), expect: "*hi*")
+        check("selection wraps with (", "hi", sel: NSRange(location: 0, length: 2), type("("), expect: "(hi)")
+        check("** pairs to ****", "", type("**"), expect: "****")
+        check("bold typed through pairs", "", type("**b**"), expect: "**b**")
+        check("apostrophe after letter not paired", "", type("don't"), expect: "don't")
+        check("``` makes a fence", "", type("```"), expect: "```")
+        check("inline code pairs and steps over", "", type("`x`"), expect: "`x`")
+        check("no pair before a word", "word", caret: 0, type("("), expect: "(word")
+
+        // Line commands
+        check("move line up", "a\nb\nc", caret: 4, { $0.moveLineUp(nil) }, expect: "a\nc\nb")
+        check("move line down", "a\nb\nc", caret: 0, { $0.moveLineDown(nil) }, expect: "b\na\nc")
+        check("move last line up", "a\nb", caret: 3, { $0.moveLineUp(nil) }, expect: "b\na")
+        check("duplicate line", "a\nb", caret: 0, { $0.duplicateLine(nil) }, expect: "a\na\nb")
+        check("duplicate last line", "a\nb", caret: 3, { $0.duplicateLine(nil) }, expect: "a\nb\nb")
+
+        // Paste link over selection
+        let pb = NSPasteboard.general
+        let savedClipboard = pb.string(forType: .string)
+        pb.clearContents(); pb.setString("https://example.com", forType: .string)
+        check("paste URL over selection makes link", "see docs", sel: NSRange(location: 4, length: 4), { $0.paste(nil) }, expect: "see [docs](https://example.com)")
+        check("paste URL without selection pastes text", "x ", { $0.paste(nil) }, expect: "x https://example.com")
+        pb.clearContents(); pb.setString("not a url", forType: .string)
+        check("paste text over selection replaces", "see docs", sel: NSRange(location: 4, length: 4), { $0.paste(nil) }, expect: "see not a url")
+        pb.clearContents(); if let savedClipboard { pb.setString(savedClipboard, forType: .string) }
+
+        // Rich text
+        let html = RichText.html("# T\n**b** and `**c**` [l](https://x.y)\n- [x] done\n  - sub")
+        let rich = html.contains("<h1>T</h1>") && html.contains("<strong>b</strong>") && html.contains("<code>**c**</code>")
+            && html.contains(#"<a href="https://x.y">l</a>"#) && html.contains("☑ done") && html.contains("<ul><li>sub")
+        check("markdown → HTML", "", { tv in if !rich { tv.string = html } }, expect: "")
+
+        // Code highlighting
+        ThemeManager.shared.select("github-dark", persist: false)   // concrete colors compare by value
+        func rgb(_ c: NSColor?) -> String { c?.usingColorSpace(.sRGB).map { String(format: "%.3f %.3f %.3f", $0.redComponent, $0.greenComponent, $0.blueComponent) } ?? "nil" }
+        func color(_ tv: NSTextView, _ i: Int) -> String { rgb(tv.textStorage!.attribute(.foregroundColor, at: i, effectiveRange: nil) as? NSColor) }
+        func token(_ k: TokenKind) -> String { rgb(Theme.token(k)) }
+        check("swift keyword highlighted", "```swift\nlet x = \"s\" // c\n```", { tv in
+            let ok = color(tv, 9) == token(.keyword) && color(tv, 17) == token(.string) && color(tv, 21) == token(.comment)
+            if !ok { tv.string = "colors wrong" }
+        }, expect: "```swift\nlet x = \"s\" // c\n```")
+        check("opening /* restyles rest of block", "```js\nlet a = 1\nlet b = 2\n```", { tv in
+            tv.setSelectedRange(NSRange(location: 6, length: 0))
+            tv.insertText("/*", replacementRange: NSRange(location: NSNotFound, length: 0))
+            // "let b" on the next line is now inside the comment
+            let i = (tv.string as NSString).range(of: "let b").location
+            if color(tv, i) != token(.comment) { tv.string = "not commented" }
+        }, expect: "```js\n/*let a = 1\nlet b = 2\n```")
+        ThemeManager.shared.select(Themes.system, persist: false)
+        // Folding
+        if let lm = tv.layoutManager as? MarkdownLayoutManager {
+            check("fold hides section only", "# A\ntext\n# B\nmore", caret: 0, { tv in
+                lm.toggleFold(at: 0)
+                let b = (tv.string as NSString).range(of: "# B").location
+                if lm.folds[0] == nil || !lm.isFolded(4) || lm.isFolded(b) { tv.string = "bad fold \(lm.folds)" }
+                lm.unfoldAll()
+            }, expect: "# A\ntext\n# B\nmore")
+            check("lower headings fold inside", "# A\n## a1\nx\n# B", caret: 0, { tv in
+                lm.toggleFold(at: 0)
+                if !lm.isFolded(4) { tv.string = "## a1 not folded" }
+                lm.unfoldAll()
+            }, expect: "# A\n## a1\nx\n# B")
+            check("caret into folded text unfolds", "# A\ntext\n# B", caret: 0, { tv in
+                lm.toggleFold(at: 0)
+                tv.setSelectedRange(NSRange(location: 6, length: 0))
+                if !lm.folds.isEmpty { tv.string = "still folded" }
+            }, expect: "# A\ntext\n# B")
+            check("edit above keeps fold", "x\n# A\ntext\n# B", caret: 0, { tv in
+                lm.toggleFold(at: 2)
+                tv.setSelectedRange(NSRange(location: 0, length: 0))
+                tv.insertText("yy", replacementRange: NSRange(location: NSNotFound, length: 0))
+                if lm.folds[4] == nil { tv.string = "fold lost \(lm.folds)" }
+                lm.unfoldAll()
+            }, expect: "yyx\n# A\ntext\n# B")
+            check("editing the heading unfolds", "# A\ntext\n# B", caret: 0, { tv in
+                lm.toggleFold(at: 0)
+                tv.setSelectedRange(NSRange(location: 3, length: 0))
+                tv.insertText("Z", replacementRange: NSRange(location: NSNotFound, length: 0))
+                if !lm.folds.isEmpty { tv.string = "still folded" }
+            }, expect: "# AZ\ntext\n# B")
+            check("blank sections don't fold", "# A\n\n# B", caret: 0, { tv in
+                if lm.toggleFold(at: 0) { tv.string = "folded blank" }
+            }, expect: "# A\n\n# B")
+        }
+
+        // Pins persist in the notes folder
+        let pinNote = NotesStore.shared.create(text: "pin me")
+        NotesStore.shared.flush()
+        NotesStore.shared.togglePin(pinNote.id)
+        NotesStore.shared.load()
+        check("pin persists on disk", "", { tv in if !NotesStore.shared.isPinned(pinNote.id) { tv.string = "lost pin" } }, expect: "")
+
+        // Font family
+        let savedFamily = Prefs.fontFamily
+        Prefs.fontFamily = "mono"
+        NotificationCenter.default.post(name: .editorSettingsDidChange, object: nil)
+        check("monospace font setting", "abc", { tv in
+            tv.didChangeText()
+            let f = tv.textStorage!.attribute(.font, at: 0, effectiveRange: nil) as? NSFont
+            if f?.isFixedPitch != true { tv.string = "not mono: \(f?.fontName ?? "nil")" }
+        }, expect: "abc")
+        Prefs.fontFamily = savedFamily
+        NotificationCenter.default.post(name: .editorSettingsDidChange, object: nil)
+
         check("code block wraps line", "let x = 1", { $0.formatCodeBlock(nil) }, expect: "```\nlet x = 1\n```")
         print(failures == 0 ? "ALL PASSED" : "\(failures) FAILED")
     }
@@ -265,6 +420,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         NotesStore.shared.flush()
+    }
+
+    @objc func checkForUpdates(_ sender: Any?) { Updater.shared.check(userInitiated: true) }
+    @objc func installUpdate(_ sender: Any?) { Updater.shared.promptInstall() }
+
+    private func updateAvailableChanged() {
+        guard let menu = statusItem.menu else { return }
+        menu.items.filter { $0.action == #selector(installUpdate(_:)) }.forEach { menu.removeItem($0) }
+        if let release = Updater.shared.available {
+            let item = NSMenuItem(title: "Install Update \(release.version)…", action: #selector(installUpdate(_:)), keyEquivalent: "")
+            item.target = self
+            menu.insertItem(item, at: 0)
+            controller.showStatus("Update \(release.version) available — ⌘K → Install Update")
+        }
     }
 
     private func registerHotKey() -> Bool {
@@ -298,6 +467,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(withTitle: "New Note", action: #selector(newFromMenu), keyEquivalent: "").target = self
         menu.addItem(.separator())
         menu.addItem(withTitle: "Settings…", action: #selector(openSettings(_:)), keyEquivalent: "").target = self
+        menu.addItem(withTitle: "Check for Updates…", action: #selector(checkForUpdates(_:)), keyEquivalent: "").target = self
         menu.addItem(.separator())
         menu.addItem(withTitle: "Quit Mini Notes", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "")
         statusItem.menu = menu
@@ -333,6 +503,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         submenu("Mini Notes", [
             item("Settings…", #selector(openSettings(_:)), ",", target: self),
+            item("Check for Updates…", #selector(checkForUpdates(_:)), "", target: self),
             sep(),
             item("Hide Window", #selector(NotesWindowController.hideWindow(_:)), "w", target: c),
             item("Quit Mini Notes", #selector(NSApplication.terminate(_:)), "q"),
@@ -346,7 +517,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             item("Next Note", #selector(NotesWindowController.nextNote(_:)), "]", target: c),
             sep(),
             item("Duplicate Note", #selector(NotesWindowController.duplicateNote(_:)), "d", target: c),
-            item("Copy Note as Markdown", #selector(NotesWindowController.copyMarkdown(_:)), "c", [.command, .shift], target: c),
+            item("Pin Note", #selector(NotesWindowController.togglePinCurrent(_:)), "p", [.command, .shift], target: c),
+            item("Copy Note", #selector(NotesWindowController.copyMarkdown(_:)), "c", [.command, .shift], target: c),
             item("Export Note…", #selector(NotesWindowController.exportNote(_:)), "e", [.command, .shift], target: c),
             item("Delete Note", #selector(NotesWindowController.deleteNote(_:)), backspace, [.command, .shift], target: c),
         ])
@@ -359,6 +531,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             item("Paste", #selector(NSText.paste(_:)), "v"),
             item("Paste and Match Style", #selector(NSTextView.pasteAsPlainText(_:)), "v", [.command, .option, .shift]),
             item("Select All", #selector(NSText.selectAll(_:)), "a"),
+            sep(),
+            item("Move Line Up", #selector(NoteTextView.moveLineUp(_:)), String(UnicodeScalar(NSUpArrowFunctionKey)!), [.command, .option]),
+            item("Move Line Down", #selector(NoteTextView.moveLineDown(_:)), String(UnicodeScalar(NSDownArrowFunctionKey)!), [.command, .option]),
+            item("Duplicate Line", #selector(NoteTextView.duplicateLine(_:)), "d", [.command, .shift]),
             sep(),
             item("Find…", #selector(NSTextView.performFindPanelAction(_:)), "f", tag: Int(NSFindPanelAction.showFindPanel.rawValue)),
             item("Find Next", #selector(NSTextView.performFindPanelAction(_:)), "g", tag: Int(NSFindPanelAction.next.rawValue)),
@@ -385,6 +561,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ])
         submenu("View", [
             item("Theme…", #selector(NotesWindowController.chooseTheme(_:)), "t", [.command, .option], target: c),
+            item("Toggle Fold", #selector(NoteTextView.toggleFoldAtCaret(_:)), "f", [.command, .option]),
+            item("Unfold All", #selector(NoteTextView.unfoldAllSections(_:)), "f", [.command, .option, .shift]),
             item("Float on Top", #selector(NotesWindowController.toggleFloat(_:)), "f", [.command, .shift], target: c),
             sep(),
             item("Bigger Text", #selector(NotesWindowController.zoomIn(_:)), "=", target: c),

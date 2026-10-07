@@ -70,14 +70,36 @@ final class MarkdownStyler: NSObject, NSTextStorageDelegate {
 
     // MARK: - Fonts
 
+    /// Rebuild fonts and paragraph styles after the editor font prefs change.
+    func reloadFonts() { makeFonts() }
+
+    /// The editor font for the current `Prefs.fontFamily`.
+    static func editorFont(size: CGFloat, weight: NSFont.Weight = .regular) -> NSFont {
+        let system = NSFont.systemFont(ofSize: size, weight: weight)
+        switch Prefs.fontFamily {
+        case "system":
+            return system
+        case "rounded", "serif":
+            let design: NSFontDescriptor.SystemDesign = Prefs.fontFamily == "rounded" ? .rounded : .serif
+            guard let d = system.fontDescriptor.withDesign(design) else { return system }
+            return NSFont(descriptor: d, size: size) ?? system
+        case "mono":
+            return .monospacedSystemFont(ofSize: size, weight: weight)
+        case let family:
+            let bold = weight.rawValue >= NSFont.Weight.semibold.rawValue
+            return NSFontManager.shared.font(withFamily: family, traits: bold ? .boldFontMask : [],
+                                             weight: bold ? 9 : 5, size: size) ?? system
+        }
+    }
+
     private func makeFonts() {
-        body = .systemFont(ofSize: baseSize)
+        body = Self.editorFont(size: baseSize)
         mono = .monospacedSystemFont(ofSize: (baseSize * 0.9 * 2).rounded() / 2, weight: .regular)
         monoSmall = .monospacedSystemFont(ofSize: baseSize - 3, weight: .medium)
         spaceWidth = (" " as NSString).size(withAttributes: [.font: body]).width
 
         let p = NSMutableParagraphStyle()
-        p.lineSpacing = (baseSize * 0.32).rounded()
+        p.lineSpacing = (baseSize * Prefs.lineSpacing).rounded()
         p.paragraphSpacing = 2
         p.defaultTabInterval = Self.tabWidth
         p.tabStops = []
@@ -100,7 +122,7 @@ final class MarkdownStyler: NSObject, NSTextStorageDelegate {
 
         let scales: [CGFloat] = [1.6, 1.33, 1.13, 1, 1, 1]
         headingFonts = scales.enumerated().map { i, s in
-            .systemFont(ofSize: (baseSize * s).rounded(), weight: i < 2 ? .bold : .semibold)
+            Self.editorFont(size: (baseSize * s).rounded(), weight: i < 2 ? .bold : .semibold)
         }
         headingParas = [12, 10, 6, 4, 4, 4].map { (before: CGFloat) -> NSParagraphStyle in
             let h = p.mutableCopy() as! NSMutableParagraphStyle
@@ -116,21 +138,81 @@ final class MarkdownStyler: NSObject, NSTextStorageDelegate {
 
     // MARK: - NSTextStorageDelegate
 
+    /// Character edits waiting to be styled.
+    private var pending: NSRange?
+    /// Called for every character edit (post-edit range, change in length) — keeps folds in place.
+    var onCharactersEdited: ((NSRange, Int) -> Void)?
+
+    /// Styling is NOT done inside the character edit: attribute changes there widen the storage's
+    /// edited range, and NSTextView then puts the caret at the end of that range (it jumped to the end
+    /// of the line when typing mid-line). Edits are recorded here and styled right after in `flush`.
     func textStorage(_ ts: NSTextStorage, willProcessEditing editedMask: NSTextStorageEditActions,
                      range editedRange: NSRange, changeInLength delta: Int) {
         guard editedMask.contains(.editedCharacters) else { return }
+        onCharactersEdited?(editedRange, delta)
+        if pending == nil {
+            pending = editedRange
+            // Fallback for edits that don't go through the text view's didChangeText.
+            DispatchQueue.main.async { [weak self, weak ts] in
+                if let self, let ts { self.flush(ts) }
+            }
+        } else {
+            pending = NSRange(location: 0, length: ts.length)   // several edits: restyle everything
+        }
+    }
+
+    /// Applies styling for pending edits as a separate, attributes-only edit.
+    func flush(_ ts: NSTextStorage) {
+        guard var editedRange = pending else { return }
+        pending = nil
+        let length = ts.length
+        editedRange.location = min(editedRange.location, length)
+        editedRange.length = min(editedRange.length, length - editedRange.location)
+        ts.beginEditing()
+        styleEdited(ts, editedRange)
+        ts.endEditing()
+    }
+
+    private func styleEdited(_ ts: NSTextStorage, _ editedRange: NSRange) {
         let ns = ts.mutableString
-        let fences = Self.countFences(ns, upTo: ns.length)
-        if fences != fenceCount {
-            fenceCount = fences
+        let fences = Self.fenceLines(ns)
+        if fences.count != fenceCount {
+            fenceCount = fences.count
             style(ts, range: NSRange(location: 0, length: ns.length))
         } else {
-            style(ts, range: ns.paragraphRange(for: editedRange))
+            // Editing inside a code block restyles the whole block (multi-line comments/strings).
+            var range = ns.paragraphRange(for: editedRange)
+            var i = 0
+            while i < fences.count {
+                let start = fences[i].location
+                let end = i + 1 < fences.count ? NSMaxRange(fences[i + 1]) : ns.length
+                if start <= NSMaxRange(range), end >= range.location {
+                    range = NSUnionRange(range, NSRange(location: start, length: end - start))
+                }
+                i += 2
+            }
+            style(ts, range: range)
         }
+    }
+
+    /// Full line ranges of every ``` fence line.
+    static func fenceLines(_ ns: NSString) -> [NSRange] {
+        var result: [NSRange] = []
+        var loc = 0
+        let len = ns.length
+        while loc < len {
+            var s = 0, e = 0, ce = 0
+            ns.getLineStart(&s, end: &e, contentsEnd: &ce, for: NSRange(location: loc, length: 0))
+            if isFence(ns, s, ce) { result.append(NSRange(location: s, length: e - s)) }
+            if e <= loc { break }
+            loc = e
+        }
+        return result
     }
 
     /// Restyle everything (e.g. after a font size change). Call between begin/endEditing.
     func styleAll(_ ts: NSTextStorage) {
+        pending = nil
         fenceCount = Self.countFences(ts.mutableString, upTo: ts.length)
         style(ts, range: NSRange(location: 0, length: ts.length))
     }
@@ -164,6 +246,8 @@ final class MarkdownStyler: NSObject, NSTextStorageDelegate {
         var fencesBefore = Self.countFences(ns, upTo: range.location)
         var loc = range.location
         let end = NSMaxRange(range)
+        var blockStart: Int? = nil
+        var blockLanguage: String? = nil
         while loc < end {
             var s = 0, e = 0, ce = 0
             ns.getLineStart(&s, end: &e, contentsEnd: &ce, for: NSRange(location: loc, length: 0))
@@ -173,12 +257,36 @@ final class MarkdownStyler: NSObject, NSTextStorageDelegate {
             let fence = Self.isFence(ns, s, ce)
             if fence || fencesBefore % 2 == 1 {
                 styleCode(ts, ns, full: full, content: content, fence: fence, block: fencesBefore / 2)
-                if fence { fencesBefore += 1 }
+                if fence {
+                    if fencesBefore % 2 == 0 {
+                        blockStart = e
+                        blockLanguage = Self.fenceLanguage(ns, content)
+                    } else if let start = blockStart {
+                        highlightCode(ts, ns, NSRange(location: start, length: s - start), blockLanguage)
+                        blockStart = nil
+                    }
+                    fencesBefore += 1
+                }
             } else if content.length > 0 {
                 styleLine(ts, ns.substring(with: content), offset: s, fullLength: full.length)
             }
             if e <= loc { break }
             loc = e
+        }
+        if let start = blockStart, end > start {   // unclosed block running to the end
+            highlightCode(ts, ns, NSRange(location: start, length: end - start), blockLanguage)
+        }
+    }
+
+    private static func fenceLanguage(_ ns: NSString, _ content: NSRange) -> String? {
+        let line = ns.substring(with: content).trimmingCharacters(in: .whitespaces)
+        let info = line.drop { $0 == "`" }.trimmingCharacters(in: .whitespaces)
+        return info.split(separator: " ").first.map { String($0).lowercased() }
+    }
+
+    private func highlightCode(_ ts: NSTextStorage, _ ns: NSString, _ range: NSRange, _ language: String?) {
+        SyntaxHighlighter.highlight(ns, range, language: language) { r, kind in
+            ts.addAttribute(.foregroundColor, value: Theme.token(kind), range: r)
         }
     }
 
